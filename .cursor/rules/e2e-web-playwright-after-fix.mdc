@@ -1,0 +1,21 @@
+---
+description: 修改 Web 控制台或修 bug 后须用 e2e-playwright-zhizhu-web（真机 Chromium）跑通验证
+alwaysApply: true
+---
+
+# Web：修复后必跑 Playwright E2E
+
+凡改动 **`apps/web`**、登录/回跳/路由/会话、或与控制台行为相关的 API 契约，在完成代码修改后 **必须** 用本仓库的 **真机 Playwright 浏览器**（Chromium）跑 E2E，**不得**只凭类型检查/构建作为唯一验收。
+
+## 怎么跑
+
+- 仓库根目录：`npm run test:e2e`（会执行 `e2e-playwright-zhizhu-web` 的 preflight + `playwright test`）。
+- 前置：见 **`e2e-playwright-zhizhu-web/README.md`**（根 `.env`、`apps/web` 的 `VITE_API_BASE_URL`、**API 与 Web 已启动** 等）。Playwright 配置里的 **baseURL** 为本地 Web 开发地址（默认 **5173**），API 一般为 **3000**。
+
+## 本机问题
+
+- 出现 **`EADDRINUSE: 3000`**：先结束占用 3000 的进程或等待先前 `tsx watch` 完全退出，再启 API，否则 E2E 无法与 API 联调。
+
+## 例外
+
+- 仅改 **文档/注释/纯样式且不影响用户路径** 时，可注明「未改运行路径，未跑 E2E」；**其余情况若环境未就绪**（如无法起服务），须在给用户的回复/PR 中**明确说明**，并在可运行时再补跑 E2E。

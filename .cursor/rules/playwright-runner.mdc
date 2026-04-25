@@ -1,0 +1,16 @@
+---
+description: 客户端 Playwright 须用 Node/TS，并遵守并发、Context、Trace、headed 约束
+alwaysApply: true
+---
+
+# Playwright / Rule Runner（本项目）
+
+编写或修改 **Electron 客户端、Rule Runner、Playwright 子进程、自动化规则执行** 相关代码时遵守：
+
+1. **仅 Node（TypeScript）**：使用官方 `playwright` npm 包；**不要**引入 `playwright-python` 作为生产路径。  
+2. **并发**：限制并行任务与同时存活的 `BrowserContext` 数量，避免拖垮员工本机。  
+3. **复用 `BrowserContext`**：优先复用；**多 `account_id` / 多抖音号** 仍须 **独立 context / storageState**，禁止串号。  
+4. **Trace**：生产默认 **关**；按需（试跑、排障）开启，控制磁盘与脱敏。  
+5. **headed**：默认 **headless**；**headed** 仅调试、试跑、必须可见 UI 时。
+
+细则与背景见仓库内 `docs/立项计划书-企业线索采集与分析平台.md` **§5.3**。

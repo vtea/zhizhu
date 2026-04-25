@@ -1,0 +1,26 @@
+{
+  "name": "playwright-field-probe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "playwright install chromium",
+    "login": "tsx src/login.ts",
+    "login:persistent": "tsx src/login.ts --persistent",
+    "login:persistent:jiacheng": "PLAYWRIGHT_BROWSER_PROFILE=jiacheng-guoji tsx src/login.ts --persistent",
+    "profile:unlock": "tsx src/unlock-profile.ts",
+    "profile:unlock:jiacheng": "PLAYWRIGHT_BROWSER_PROFILE=jiacheng-guoji tsx src/unlock-profile.ts",
+    "probe": "tsx src/probe.ts",
+    "probe:persistent": "tsx src/probe.ts --persistent",
+    "probe:headed": "tsx src/probe.ts --headed",
+    "probe:persistent:headed": "tsx src/probe.ts --persistent --headed",
+    "probe:anonymous": "tsx src/probe.ts --anonymous",
+    "dump-menu-keys": "tsx src/dump-menu-keys.ts",
+    "probe:verify:clue-tabs": "sh scripts/verify-clue-list-tabs.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "playwright": "1.49.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

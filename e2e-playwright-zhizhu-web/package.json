@@ -1,0 +1,16 @@
+{
+  "name": "zhizhu-e2e-playwright",
+  "private": true,
+  "description": "知竹 Web 控制台：Playwright 真机 E2E（与 tools/playwright-field-probe 无代码共用）",
+  "type": "module",
+  "scripts": {
+    "test:e2e": "node scripts/preflight.mjs && playwright test",
+    "test:e2e:skip-preflight": "playwright test",
+    "test:e2e:install-browser": "playwright install chromium",
+    "test:e2e:login": "node scripts/preflight.mjs && playwright test specs/01-console-login-and-register.spec.ts --grep 登录"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.0",
+    "playwright": "1.49.0"
+  }
+}

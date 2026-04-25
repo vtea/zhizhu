@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>知竹</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+        margin: 0;
+        padding: 1.25rem 1.5rem 1.5rem;
+        color: #1a1a1a;
+        background: #f7f6f2;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 1.125rem;
+        font-weight: 600;
+        margin: 0 0 0.35rem;
+      }
+      .sub {
+        font-size: 0.8125rem;
+        color: #5c5c5c;
+        margin: 0 0 1rem;
+      }
+      .url {
+        font-size: 0.75rem;
+        word-break: break-all;
+        color: #666;
+        margin-bottom: 0.75rem;
+      }
+      label {
+        display: block;
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: #444;
+        margin-bottom: 0.25rem;
+      }
+      .row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: flex-end;
+        margin-bottom: 0.75rem;
+        flex-wrap: wrap;
+        position: relative;
+        z-index: 0;
+        isolation: isolate;
+      }
+      .row > button {
+        position: relative;
+        z-index: 1;
+        flex-shrink: 0;
+      }
+      /** 避免 flex 子项默认 min-width:auto 导致输入框「占位过宽」与兄弟重叠，出现点了 A 框却像键盘失效 */
+      .row > input[type="text"] {
+        flex: 1 1 0;
+        min-width: 0;
+      }
+      input[type="text"] {
+        padding: 0.45rem 0.55rem;
+        font: inherit;
+        font-size: 0.875rem;
+        border: 1px solid #c8c4b8;
+        border-radius: 0.45rem;
+        background: #fff;
+      }
+      .field-block {
+        margin-bottom: 0.5rem;
+      }
+      .field-block input[type="text"] {
+        display: block;
+        width: 100%;
+        flex: none;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+      button {
+        display: inline-block;
+        padding: 0.45rem 0.75rem;
+        font-size: 0.8125rem;
+        color: #fff;
+        background: #3b4aa6;
+        border: 0;
+        border-radius: 0.45rem;
+        cursor: pointer;
+        font: inherit;
+      }
+      button:hover {
+        background: #2d3a8c;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      button.secondary {
+        color: #1a1a1a;
+        background: #e8e6de;
+      }
+      button.secondary:hover {
+        background: #dcd9ce;
+      }
+      #links {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.45rem;
+        margin: 0.75rem 0 0.5rem;
+      }
+      button.link {
+        text-align: left;
+        color: #1a2a6e;
+        background: #e8eaf7;
+        font-size: 0.8125rem;
+      }
+      button.link:hover {
+        background: #d8dcf0;
+      }
+      .hint {
+        font-size: 0.6875rem;
+        color: #888;
+        margin: 0.5rem 0 0;
+      }
+      .status {
+        font-size: 0.75rem;
+        color: #3d5a40;
+        margin-top: 0.65rem;
+        min-height: 1.25rem;
+      }
+      .status.error {
+        color: #8b2e2e;
+        font-weight: 600;
+        white-space: pre-wrap;
+      }
+      .meta {
+        font-size: 0.6875rem;
+        color: #777;
+        margin-top: 0.35rem;
+        word-break: break-all;
+      }
+      .meta-bad {
+        color: #a62c2c;
+        font-weight: 500;
+      }
+      .title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 0.75rem;
+        margin-bottom: 0.25rem;
+        position: relative;
+        isolation: isolate;
+      }
+      .title-row .title-stack {
+        min-width: 0;
+        overflow: hidden;
+      }
+      /** 避免长词/无空格串在窄窗下横向溢出，叠在右侧「日志」上抢走点击 */
+      .title-row .sub {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .title-row #toggle-log {
+        flex-shrink: 0;
+        align-self: flex-start;
+        min-width: 4.5rem;
+        box-sizing: border-box;
+        margin-top: 0;
+        position: relative;
+        z-index: 2;
+        /** 少数 flex 子项在窄宽下会异常挤压可点区 */
+        pointer-events: auto;
+        touch-action: manipulation;
+      }
+      .log-panel {
+        border: 1px solid #c8c4b8;
+        border-radius: 0.45rem;
+        background: #fff;
+        margin: 0.65rem 0 0.75rem;
+        overflow: hidden;
+      }
+      .log-panel.hidden {
+        display: none;
+      }
+      .log-head {
+        font-size: 0.6875rem;
+        padding: 0.35rem 0.5rem;
+        background: #eceae4;
+        color: #555;
+        border-bottom: 1px solid #dcd9ce;
+      }
+      .log-body {
+        margin: 0;
+        padding: 0.5rem;
+        font-size: 0.6875rem;
+        line-height: 1.45;
+        max-height: 220px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: #222;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="title-row">
+      <div class="title-stack">
+        <h1>知竹 · 本地客户端</h1>
+        <p class="sub">在系统浏览器中打开 Web 控制台（与立项一致）。绑定码由 Web「设备绑定」生成；托盘菜单可再次打开控制台。</p>
+      </div>
+      <button type="button" id="toggle-log" class="secondary" aria-expanded="false">日志</button>
+    </div>
+    <p class="url" id="base">控制台基址：正在从本机进程读取…</p>
+    <p class="meta" id="api-reach" aria-live="polite">API 连通性：等待探测…</p>
+    <label for="tenant">租户 ID（深链 <code>/t/:tenantId/...</code>）</label>
+    <div class="row">
+      <input
+        type="text"
+        id="tenant"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="demo（小写；可含 - 与 _）"
+      />
+      <button type="button" id="save-tenant" class="secondary">保存</button>
+      <button type="button" id="open">打开控制台（浏览器）</button>
+    </div>
+    <p class="meta" id="device"></p>
+    <label for="bind-code">设备绑定码（一次性，<code>POST /api/v1/device-bind/consume</code>）</label>
+    <div class="field-block">
+      <input
+        type="text"
+        id="bind-code"
+        autocomplete="off"
+        spellcheck="false"
+        autocapitalize="characters"
+        placeholder="BIND-…（大小写均可，粘贴即可）"
+      />
+    </div>
+    <label for="bind-label">本机显示名（可选）</label>
+    <div class="field-block">
+      <input type="text" id="bind-label" autocomplete="off" spellcheck="false" placeholder="例如：采集机-01" />
+    </div>
+    <div class="row">
+      <button type="button" id="bind-submit" class="secondary">绑定设备</button>
+    </div>
+    <div id="links"></div>
+    <div id="log-panel" class="log-panel hidden" aria-hidden="true">
+      <div class="log-head">客户端日志（主进程 + 本页）</div>
+      <pre id="log-body" class="log-body"></pre>
+    </div>
+    <p class="hint">
+      基址：<code>ZHIZHU_WEB_BASE_URL</code>；API：<code>ZHIZHU_API_BASE_URL</code>（默认同机 :3000）；可选 WSS：<code>ZHIZHU_WSS_URL</code>。默认租户：<code>ZHIZHU_DEFAULT_TENANT</code>。状态文件位于应用
+      <code>userData</code> 目录下的 <code>client-state.json</code>。
+    </p>
+    <p class="status" id="status"></p>
+    <script
+      src="dist/renderer.js"
+      onerror="(function(){var e=document.getElementById('status');if(e){e.textContent='无法加载 dist/renderer.js，请在 apps/client 执行 npm run build';e.className='status error';}var b=document.getElementById('base');if(b){b.textContent='（界面脚本未加载）';}})()"
+    ></script>
+  </body>
+</html>

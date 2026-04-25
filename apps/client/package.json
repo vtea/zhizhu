@@ -1,0 +1,26 @@
+{
+  "name": "@zhizhu/client",
+  "private": true,
+  "version": "0.1.0",
+  "description": "知竹本地客户端（Electron）：数据面入口，用系统浏览器打开 Web 控制台",
+  "type": "commonjs",
+  "main": "dist/main.js",
+  "scripts": {
+    "build:client": "npm run build",
+    "build": "tsc -p tsconfig.json && npm run build:renderer",
+    "build:renderer": "esbuild src/renderer.ts --bundle --format=iife --platform=browser --outfile=dist/renderer.js --sourcemap",
+    "watch": "tsc -p tsconfig.json -w",
+    "watch:renderer": "esbuild src/renderer.ts --bundle --format=iife --platform=browser --outfile=dist/renderer.js --sourcemap --watch",
+    "start": "npm run build && electron .",
+    "dev": "npm run start"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^35.7.5",
+    "esbuild": "^0.25.2",
+    "typescript": "~5.8.0"
+  }
+}

@@ -1,0 +1,18 @@
+.DS_Store
+**/._*
+.env
+.env.local
+.env.*.local
+!.env.example
+node_modules/
+apps/web/dist/
+apps/client/dist/
+apps/api/dist/
+
+# Playwright 字段探测（登录态与抓包输出，勿提交）
+tools/playwright-field-probe/.auth/
+tools/playwright-field-probe/.browser-profile/
+tools/playwright-field-probe/.browser-profiles/
+tools/playwright-field-probe/.out/
+tools/playwright-field-probe/trace.zip
+tools/playwright-field-probe/playwright-report/
