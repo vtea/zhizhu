@@ -31,12 +31,16 @@ test.describe("知竹 Web：登录", () => {
 
 test.describe("知竹 Web：注册", () => {
   test("可提交新用户并回到登录", async ({ page }) => {
+    await page.goto("/register", { waitUntil: "load" });
+    if (await page.getByRole("heading", { name: "未开放自助注册" }).isVisible()) {
+      test.skip(true, "须开启 VITE_CONSOLE_PUBLIC_REGISTER 与 CONSOLE_ALLOW_PUBLIC_REGISTER（见 e2e README）");
+      return;
+    }
     const u = `e2e${Date.now()}${Math.random().toString(36).slice(2, 10)}`
       .toLowerCase()
       .replace(/[^a-z0-9_]/g, "x")
       .slice(0, 32);
     const em = `${u}@e2e.local.test`;
-    await page.goto("/register", { waitUntil: "load" });
     await expect(page.getByRole("heading", { name: "注册控制台用户" })).toBeVisible();
     await page.getByLabel("租户 ID", { exact: true }).fill("demo");
     await page.getByPlaceholder(/位小写，字母或数字开头/).fill(u);

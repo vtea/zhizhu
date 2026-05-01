@@ -13,10 +13,9 @@ export type MockLead = {
   dy_lead_id: string;
   /** API 列表会返回；mock 行亦带阶段 */
   lead_stage: LeadStage;
-  dy_avatar_url: string | null;
   dy_nickname: string | null;
   dy_unique_id: string | null;
-  dy_region: string | null;
+  dy_region?: string | null;
   dy_intent_level: string | null;
   dy_last_interaction_at: string | null;
   /** PG 上云：来源视频、账号展示名（见数据字典-线索） */
@@ -33,6 +32,8 @@ export type MockVideo = {
   dy_video_id: string;
   dy_title: string | null;
   dy_cover_url: string | null;
+  /** 视频页 / v.douyin.com 短链等，与封面图分列 */
+  dy_video_url: string | null;
   dy_duration_sec: number | null;
   dy_publish_at: string | null;
   dy_play_count: number | null;
@@ -57,9 +58,28 @@ export type MockAccount = {
   dy_leads_enterprise_name: string | null;
   dy_nickname: string | null;
   dy_unique_id: string | null;
-  ops_status: "running" | "paused";
+  dy_user_url?: string | null;
+  ops_status: "running" | "paused" | "revoked";
   remark?: string | null;
 };
+
+/** 与 `tenantApi.listAccounts` 中 ops_status 的 CASE 语义一致，供下拉与筛选 */
+export function normalizeBizAccountOpsStatusUi(raw: unknown): "running" | "paused" | "revoked" {
+  if (raw === "paused" || raw === "revoked" || raw === "running") {
+    return raw;
+  }
+  if (typeof raw === "string") {
+    const s = raw.trim().toLowerCase();
+    if (s === "paused") return "paused";
+    if (s === "revoked") return "revoked";
+  }
+  return "running";
+}
+
+/** 与 API `active_ops_only`：可参与离线新建视频、投放、同步任务等 */
+export function accountEligibleForOpsBinding(a: { ops_status?: unknown }): boolean {
+  return normalizeBizAccountOpsStatusUi(a.ops_status) === "running";
+}
 
 /** 线索版浏览器里登录态健康（由客户端探测上报，见 `数据字典-任务与设备.md` §3.2） */
 export type BrowserSessionHealth = "healthy" | "stale" | "logged_out" | "unknown";
@@ -78,6 +98,17 @@ export type MockDeviceBrowserAccount = {
   session_check_error_code: string | null;
 };
 
+/** Electron 客户端「Playwright 浏览器」页同步上报的 Chromium 持久配置（独立于业务抖音账号登记表） */
+export type MockDevicePlaywrightShellProfile = {
+  client_profile_id: string;
+  browser_profile_slug: string;
+  display_label: string;
+  default_start_path: string | null;
+  last_opened_at_client: string | null;
+  is_default_profile: boolean;
+  synced_at: string | null;
+};
+
 export type MockDevice = {
   device_id: string;
   tenant_id: string;
@@ -86,6 +117,8 @@ export type MockDevice = {
   last_seen_at: string | null;
   /** 本机已配置、并向云端上报过的浏览器账号（可多行） */
   browser_accounts: MockDeviceBrowserAccount[];
+  /** Electron 客户端「Playwright 浏览器」页同步至云端的持久目录摘要 */
+  playwright_shell_profiles: MockDevicePlaywrightShellProfile[];
 };
 
 export type MockRule = {
@@ -106,10 +139,8 @@ const mockLeadsCore: MockLead[] = [
     account_id: "7312345678901234567",
     dy_lead_id: "lead-10001",
     lead_stage: "no_conversion",
-    dy_avatar_url: null,
     dy_nickname: "示例用户甲",
     dy_unique_id: "user_alpha",
-    dy_region: "上海",
     dy_intent_level: "高",
     dy_last_interaction_at: "2026-04-22T10:15:00.000Z",
   },
@@ -121,10 +152,8 @@ const mockLeadsCore: MockLead[] = [
     account_id: "7312345678901234567",
     dy_lead_id: "lead-10002",
     lead_stage: "converted",
-    dy_avatar_url: null,
     dy_nickname: "示例用户乙",
     dy_unique_id: "user_beta",
-    dy_region: "浙江",
     dy_intent_level: "中",
     dy_last_interaction_at: "2026-04-21T08:40:00.000Z",
   },
@@ -136,10 +165,8 @@ const mockLeadsCore: MockLead[] = [
     account_id: "7319988776655443322",
     dy_lead_id: "lead-10003",
     lead_stage: "no_conversion",
-    dy_avatar_url: null,
     dy_nickname: "示例用户丙",
     dy_unique_id: "user_gamma",
-    dy_region: "广东",
     dy_intent_level: "低",
     dy_last_interaction_at: "2026-04-20T16:05:00.000Z",
   },
@@ -156,10 +183,8 @@ const extraMockLeads: MockLead[] = Array.from({ length: 21 }, (_, i) => {
     account_id: i % 2 === 0 ? "7312345678901234567" : "7319988776655443322",
     dy_lead_id: `lead-gen-${11000 + i}`,
     lead_stage: converted ? ("converted" as const) : ("no_conversion" as const),
-    dy_avatar_url: null,
     dy_nickname: `批量线索 ${idx}`,
     dy_unique_id: `user_gen_${idx}`,
-    dy_region: (["江苏", "北京", "四川", "湖北"] as const)[i % 4],
     dy_intent_level: (["高", "中", "低"] as const)[i % 3],
     dy_last_interaction_at: new Date(Date.UTC(2026, 3, 10 + (i % 10), 8, 0)).toISOString(),
   };
@@ -177,6 +202,7 @@ export const mockVideos: MockVideo[] = [
     dy_video_id: "vid-90001",
     dy_title: "春季新品一分钟讲透",
     dy_cover_url: null,
+    dy_video_url: null,
     dy_duration_sec: 62,
     dy_publish_at: "2026-04-18T12:00:00.000Z",
     dy_play_count: 128_000,
@@ -197,6 +223,7 @@ export const mockVideos: MockVideo[] = [
     dy_video_id: "vid-90002",
     dy_title: "门店探店：周末客流复盘",
     dy_cover_url: null,
+    dy_video_url: null,
     dy_duration_sec: 45,
     dy_publish_at: "2026-04-10T09:30:00.000Z",
     dy_play_count: 45_000,
@@ -217,6 +244,7 @@ export const mockVideos: MockVideo[] = [
     dy_video_id: "vid-90003",
     dy_title: "矩阵账号冷启动记录",
     dy_cover_url: null,
+    dy_video_url: null,
     dy_duration_sec: 38,
     dy_publish_at: "2026-04-05T14:20:00.000Z",
     dy_play_count: 9800,
@@ -241,6 +269,7 @@ export const mockAccounts: MockAccount[] = [
     dy_leads_enterprise_name: "示例企业主体 A",
     dy_nickname: "企业号·华东",
     dy_unique_id: "east_official",
+    dy_user_url: "https://www.douyin.com/user/mock-east-official",
     ops_status: "running",
   },
   {
@@ -253,7 +282,34 @@ export const mockAccounts: MockAccount[] = [
     dy_leads_enterprise_name: "示例企业主体 A",
     dy_nickname: "个人授权·小王",
     dy_unique_id: "wang_auth",
+    dy_user_url: "https://www.douyin.com/user/mock-wang-auth",
     ops_status: "running",
+  },
+  {
+    id: "a3",
+    tenant_id: MOCK_TENANT,
+    platform: "douyin",
+    account_id: "7310000000000000001",
+    account_kind: "enterprise_staff",
+    dy_leads_enterprise_id: "ent-001",
+    dy_leads_enterprise_name: "示例企业主体 A",
+    dy_nickname: "演示·已暂停",
+    dy_unique_id: "paused_demo",
+    dy_user_url: null,
+    ops_status: "paused",
+  },
+  {
+    id: "a4",
+    tenant_id: MOCK_TENANT,
+    platform: "douyin",
+    account_id: "7310000000000000002",
+    account_kind: "enterprise_staff",
+    dy_leads_enterprise_id: "ent-001",
+    dy_leads_enterprise_name: "示例企业主体 A",
+    dy_nickname: "演示·已撤销",
+    dy_unique_id: "revoked_demo",
+    dy_user_url: null,
+    ops_status: "revoked",
   },
 ];
 
@@ -286,6 +342,17 @@ export const mockDevices: MockDevice[] = [
         session_check_error_code: null,
       },
     ],
+    playwright_shell_profiles: [
+      {
+        client_profile_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        browser_profile_slug: "demo-local-a",
+        display_label: "演示 · 客户端配置",
+        default_start_path: "/t/demo/",
+        last_opened_at_client: "2026-04-23T09:30:00.000Z",
+        is_default_profile: true,
+        synced_at: "2026-04-23T09:31:05.123Z",
+      },
+    ],
   },
   {
     device_id: "dev-win-002",
@@ -305,6 +372,7 @@ export const mockDevices: MockDevice[] = [
         session_check_error_code: "LOGIN_WALL",
       },
     ],
+    playwright_shell_profiles: [],
   },
 ];
 

@@ -2,10 +2,18 @@ import { getApiBaseUrl } from "@/api/env";
 import { inInteractionWindow, type AnalyticsFilters, parseYmd } from "@/api/analytics-filters";
 import { apiDeleteJson, apiGetJson, apiPatchJson, apiPostJson } from "@/api/http";
 import type { Paginated } from "@/api/types";
+import { sameBizAccountId } from "@/lib/bizAccountId";
+import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
 import { sleepMock } from "@/mocks/delay";
 import { mockVideos, type MockVideo } from "@/mocks/seed";
 
-export type VideoSortKey = "play_desc" | "publish_desc";
+export type VideoSortKey =
+  | "publish_desc"
+  | "play_desc"
+  | "like_desc"
+  | "comment_desc"
+  | "favorite_desc"
+  | "share_desc";
 
 export type ListVideosQuery = {
   tenantId: string;
@@ -15,6 +23,7 @@ export type ListVideosQuery = {
   page: number;
   pageSize: number;
   sort: VideoSortKey;
+  dyLeadsEnterpriseId?: string | null;
 } & Pick<AnalyticsFilters, "from" | "to">;
 
 function applyVideoFilters(q: ListVideosQuery): MockVideo[] {
@@ -22,10 +31,13 @@ function applyVideoFilters(q: ListVideosQuery): MockVideo[] {
     if (v.tenant_id !== q.tenantId) {
       return false;
     }
+    if (q.dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(v.dy_leads_enterprise_id, q.dyLeadsEnterpriseId)) {
+      return false;
+    }
     if (q.dyVideoId && v.dy_video_id !== q.dyVideoId) {
       return false;
     }
-    if (q.accountId && v.account_id !== q.accountId) {
+    if (q.accountId && !sameBizAccountId(v.account_id, q.accountId)) {
       return false;
     }
     if (q.from || q.to) {
@@ -37,14 +49,32 @@ function applyVideoFilters(q: ListVideosQuery): MockVideo[] {
 
 function sortVideos(rows: MockVideo[], sort: VideoSortKey): MockVideo[] {
   const copy = [...rows];
-  if (sort === "play_desc") {
-    copy.sort((a, b) => (b.dy_play_count ?? 0) - (a.dy_play_count ?? 0));
-  } else {
-    copy.sort((a, b) => {
-      const ta = a.dy_publish_at ? new Date(a.dy_publish_at).getTime() : 0;
-      const tb = b.dy_publish_at ? new Date(b.dy_publish_at).getTime() : 0;
-      return tb - ta;
-    });
+  const num = (v: number | null | undefined) =>
+    v == null || !Number.isFinite(Number(v)) ? 0 : Number(v);
+  const byPublish = (a: MockVideo, b: MockVideo) => {
+    const ta = a.dy_publish_at ? new Date(a.dy_publish_at).getTime() : 0;
+    const tb = b.dy_publish_at ? new Date(b.dy_publish_at).getTime() : 0;
+    return tb - ta;
+  };
+  switch (sort) {
+    case "play_desc":
+      copy.sort((a, b) => num(b.dy_play_count) - num(a.dy_play_count));
+      break;
+    case "like_desc":
+      copy.sort((a, b) => num(b.dy_like_count) - num(a.dy_like_count));
+      break;
+    case "comment_desc":
+      copy.sort((a, b) => num(b.dy_comment_count) - num(a.dy_comment_count));
+      break;
+    case "favorite_desc":
+      copy.sort((a, b) => num(b.dy_favorite_count) - num(a.dy_favorite_count));
+      break;
+    case "share_desc":
+      copy.sort((a, b) => num(b.dy_share_count) - num(a.dy_share_count));
+      break;
+    case "publish_desc":
+      copy.sort(byPublish);
+      break;
   }
   return copy;
 }
@@ -66,6 +96,9 @@ export async function listVideos(q: ListVideosQuery): Promise<Paginated<MockVide
     if (q.to) {
       params.set("to", q.to);
     }
+    if (q.dyLeadsEnterpriseId?.trim()) {
+      params.set("dy_leads_enterprise_id", q.dyLeadsEnterpriseId.trim());
+    }
     return apiGetJson<Paginated<MockVideo>>(
       `/api/v1/tenants/${encodeURIComponent(q.tenantId)}/videos?${params}`,
     );
@@ -84,7 +117,20 @@ export async function patchVideo(
   tenantId: string,
   platform: string,
   dyVideoId: string,
-  body: { dy_title?: string | null; dy_cover_url?: string | null },
+  body: {
+    dy_title?: string | null;
+    dy_cover_url?: string | null;
+    dy_video_url?: string | null;
+    dy_play_count?: number | null;
+    dy_duration_sec?: number | null;
+    dy_like_count?: number | null;
+    dy_comment_count?: number | null;
+    dy_favorite_count?: number | null;
+    dy_share_count?: number | null;
+    dy_completion_rate?: number | null;
+    dy_lead_count?: number | null;
+    metric_synced_at?: string | null;
+  },
 ): Promise<void> {
   await apiPatchJson(
     `/api/v1/tenants/${encodeURIComponent(tenantId)}/videos/${encodeURIComponent(platform)}/${encodeURIComponent(dyVideoId)}`,
@@ -103,6 +149,7 @@ export type CreateVideoOfflineBody = {
   dy_video_id: string;
   dy_title?: string | null;
   dy_cover_url?: string | null;
+  dy_video_url?: string | null;
   /** `YYYY-MM-DD` 或 ISO 时间串 */
   dy_publish_at?: string | null;
   platform?: string;
@@ -112,13 +159,31 @@ export async function createVideoOffline(tenantId: string, body: CreateVideoOffl
   return apiPostJson(`/api/v1/tenants/${encodeURIComponent(tenantId)}/videos`, body);
 }
 
-export async function listRecommendedVideos(tenantId: string): Promise<RecommendedItem[]> {
+export async function listRecommendedVideos(
+  tenantId: string,
+  dyLeadsEnterpriseId?: string | null,
+): Promise<RecommendedItem[]> {
   const base = getApiBaseUrl();
   if (base) {
-    return apiGetJson<RecommendedItem[]>(`/api/v1/tenants/${encodeURIComponent(tenantId)}/videos/recommended`);
+    const qs = new URLSearchParams();
+    if (dyLeadsEnterpriseId?.trim()) {
+      qs.set("dy_leads_enterprise_id", dyLeadsEnterpriseId.trim());
+    }
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return apiGetJson<RecommendedItem[]>(
+      `/api/v1/tenants/${encodeURIComponent(tenantId)}/videos/recommended${suffix}`,
+    );
   }
   await sleepMock();
-  const rows = mockVideos.filter((v) => v.tenant_id === tenantId);
+  const rows = mockVideos.filter((v) => {
+    if (v.tenant_id !== tenantId) {
+      return false;
+    }
+    if (dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(v.dy_leads_enterprise_id, dyLeadsEnterpriseId)) {
+      return false;
+    }
+    return true;
+  });
   return rows
     .map((v) => ({
       ...v,

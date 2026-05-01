@@ -1,13 +1,24 @@
 import { DataTable, type DataColumn } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
-import { createBizAccount, deleteBizAccount, listAccounts, updateBizAccount, type CreateBizAccountBody } from "@/api/accounts";
+import { Banner, Button, Field, OverlaySectionCard, SelectInput, TextInput } from "@/components/ui";
+import {
+  createBizAccount,
+  deleteBizAccount,
+  listAccounts,
+  listAllAccounts,
+  updateBizAccount,
+  type CreateBizAccountBody,
+} from "@/api/accounts";
+import { listLeadsEnterprisesVisible } from "@/api/consoleExtras";
 import { getApiBaseUrl } from "@/api/env";
+import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
 import { useTenantId } from "@/hooks/useTenantId";
+import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
 import { cardPanelTabClass } from "@/lib/segmentPillClass";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
-import type { MockAccount } from "@/mocks/seed";
+import { normalizeBizAccountOpsStatusUi, type MockAccount } from "@/mocks/seed";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 type TabId = "enterprise_staff" | "personal_authorized";
@@ -18,6 +29,7 @@ function parseTab(raw: string | null): TabId {
 
 export function StaffAccountsPage() {
   const tenantId = useTenantId();
+  const { selectedDyLeadsEnterpriseId } = useSelectedEnterprise();
   const qc = useQueryClient();
   const api = Boolean(getApiBaseUrl());
   const [search, setSearch] = useSearchParams();
@@ -25,12 +37,14 @@ export function StaffAccountsPage() {
   const [formErr, setFormErr] = useState<string | null>(null);
   const [newAccountId, setNewAccountId] = useState("");
   const [newKind, setNewKind] = useState<"enterprise_staff" | "personal_authorized">("enterprise_staff");
-  const [newEnt, setNewEnt] = useState("ent-001");
+  const [newEnt, setNewEnt] = useState("");
   const [newNick, setNewNick] = useState("");
   const [newUnique, setNewUnique] = useState("");
+  const [newUserUrl, setNewUserUrl] = useState("");
   const [editAccount, setEditAccount] = useState<MockAccount | null>(null);
   const [eNick, setENick] = useState("");
   const [eUnique, setEUnique] = useState("");
+  const [eUserUrl, setEUserUrl] = useState("");
   const [eEntId, setEEntId] = useState("");
   const [eEntName, setEEntName] = useState("");
   const [eRemark, setERemark] = useState("");
@@ -39,9 +53,52 @@ export function StaffAccountsPage() {
   const [tableActionErr, setTableActionErr] = useState<string | null>(null);
 
   const query = useQuery({
-    queryKey: ["accounts", tenantId, tab],
-    queryFn: () => listAccounts({ tenantId, accountKind: tab }),
+    queryKey: ["accounts", tenantId, tab, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => listAccounts({ tenantId, accountKind: tab, dyLeadsEnterpriseId: selectedDyLeadsEnterpriseId }),
   });
+  const allAccountsQuery = useQuery({
+    queryKey: ["accounts-all", tenantId, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => listAllAccounts(tenantId, selectedDyLeadsEnterpriseId),
+  });
+  const enterpriseCount = allAccountsQuery.data?.filter((a) => a.account_kind === "enterprise_staff").length;
+  const personalCount = allAccountsQuery.data?.filter((a) => a.account_kind === "personal_authorized").length;
+
+  const visibleEntQ = useQuery({
+    queryKey: ["leads-enterprises-visible", tenantId],
+    queryFn: () => listLeadsEnterprisesVisible(tenantId),
+    enabled: api,
+  });
+  const registeredEnterprises =
+    visibleEntQ.data?.enterprises?.filter((e) => (e.status ?? "active") === "active") ?? [];
+
+  /** 下拉用：激活主体 +（编辑时）当前账号正在使用的主体（含已归档），避免受控下拉无匹配选项导致 PATCH 报错 */
+  const enterprisePickerRows = useMemo(() => {
+    const raw = visibleEntQ.data?.enterprises ?? [];
+    const curId = editAccount?.dy_leads_enterprise_id?.trim() ?? "";
+    const seen = new Set<string>();
+    const out: typeof raw = [];
+    for (const e of raw) {
+      const id = e.dy_leads_enterprise_id?.trim();
+      if (!id || seen.has(id)) continue;
+      const active = (e.status ?? "active") === "active";
+      if (active || sameDyLeadsEnterpriseId(id, curId)) {
+        out.push(e);
+        seen.add(id);
+      }
+    }
+    if (curId && !out.some((x) => sameDyLeadsEnterpriseId(x.dy_leads_enterprise_id, curId))) {
+      out.push({
+        dy_leads_enterprise_id: curId,
+        display_name: editAccount?.dy_leads_enterprise_name?.trim() || null,
+        status: "archived",
+      });
+    }
+    return out;
+  }, [
+    visibleEntQ.data?.enterprises,
+    editAccount?.dy_leads_enterprise_id,
+    editAccount?.dy_leads_enterprise_name,
+  ]);
 
   const createMut = useMutation({
     mutationFn: (body: CreateBizAccountBody) => createBizAccount(tenantId, body),
@@ -50,9 +107,12 @@ export function StaffAccountsPage() {
       setNewAccountId("");
       setNewNick("");
       setNewUnique("");
+      setNewUserUrl("");
       setCreateFormOpen(false);
       await qc.invalidateQueries({ queryKey: ["accounts", tenantId] });
       await qc.invalidateQueries({ queryKey: ["accounts-all", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["accounts-ops-eligible", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["leads-enterprises-visible", tenantId] });
     },
     onError: (e) => {
       setFormErr(formatApiErrorMessage(e, "失败"));
@@ -60,12 +120,14 @@ export function StaffAccountsPage() {
   });
 
   const patchOpsMut = useMutation({
-    mutationFn: (p: { platform: string; accountId: string; ops_status: "running" | "paused" }) =>
+    mutationFn: (p: { platform: string; accountId: string; ops_status: "running" | "paused" | "revoked" }) =>
       updateBizAccount(tenantId, p.platform, p.accountId, { ops_status: p.ops_status }),
     onSuccess: async () => {
       setFormErr(null);
       await qc.invalidateQueries({ queryKey: ["accounts", tenantId] });
       await qc.invalidateQueries({ queryKey: ["accounts-all", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["accounts-ops-eligible", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["leads-enterprises-visible", tenantId] });
     },
     onError: (e) => {
       setFormErr(formatApiErrorMessage(e, "更新失败"));
@@ -77,21 +139,36 @@ export function StaffAccountsPage() {
       if (!editAccount) {
         throw new Error("未选择账号");
       }
-      return updateBizAccount(tenantId, editAccount.platform, editAccount.account_id, {
+      const entResolved = eEntId.trim() || editAccount.dy_leads_enterprise_id?.trim() || "";
+      if (editAccount.account_kind === "enterprise_staff" && !entResolved) {
+        throw new Error("NO_ENTERPRISE");
+      }
+      /** 避免把空字符串送给 PATCH，服务端会校验「不能为空」→ 400 */
+      const patch: Parameters<typeof updateBizAccount>[3] = {
         dy_display_name: eNick.trim() || null,
         dy_unique_id: eUnique.trim() || null,
-        dy_leads_enterprise_id: eEntId.trim() || editAccount.dy_leads_enterprise_id,
+        dy_user_url: eUserUrl.trim() || null,
         dy_leads_enterprise_name: eEntName.trim() || null,
         remark: eRemark.trim() || null,
-      });
+      };
+      if (entResolved && entResolved.trim().length > 0) {
+        patch.dy_leads_enterprise_id = entResolved.trim();
+      }
+      return updateBizAccount(tenantId, editAccount.platform, editAccount.account_id, patch);
     },
     onSuccess: async () => {
       setFormErr(null);
       setEditAccount(null);
       await qc.invalidateQueries({ queryKey: ["accounts", tenantId] });
       await qc.invalidateQueries({ queryKey: ["accounts-all", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["accounts-ops-eligible", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["leads-enterprises-visible", tenantId] });
     },
     onError: (e) => {
+      if (e instanceof Error && e.message === "NO_ENTERPRISE") {
+        setFormErr("请选择线索版企业主体");
+        return;
+      }
       setFormErr(formatApiErrorMessage(e, "保存失败"));
     },
   });
@@ -104,6 +181,8 @@ export function StaffAccountsPage() {
       setEditAccount(null);
       await qc.invalidateQueries({ queryKey: ["accounts", tenantId] });
       await qc.invalidateQueries({ queryKey: ["accounts-all", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["accounts-ops-eligible", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["leads-enterprises-visible", tenantId] });
     },
     onError: (e) => {
       setTableActionErr(formatApiErrorMessage(e, "删除失败"));
@@ -131,18 +210,39 @@ export function StaffAccountsPage() {
       setFormErr("请填写抖音侧固定账号 ID（纯数字）");
       return;
     }
+    if (!newEnt.trim()) {
+      setFormErr("请选择已在「组织与成员」登记的线索版企业主体");
+      return;
+    }
     createMut.mutate({
       account_id: newAccountId.trim(),
       account_kind: newKind,
-      dy_leads_enterprise_id: newEnt.trim() || "ent-001",
+      dy_leads_enterprise_id: newEnt.trim(),
       dy_display_name: newNick.trim() || null,
       dy_unique_id: newUnique.trim() || null,
+      dy_user_url: newUserUrl.trim() || null,
       platform: "douyin",
     });
   }
 
   const accountColumns: DataColumn<MockAccount>[] = [
-    { id: "nick", header: "展示昵称", cell: (r) => r.dy_nickname ?? "—" },
+    {
+      id: "nick",
+      header: "账户名字",
+      cell: (r) =>
+        r.dy_user_url ? (
+          <a
+            className="text-zz-accent underline-offset-2 hover:underline"
+            href={r.dy_user_url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {r.dy_nickname ?? "—"}
+          </a>
+        ) : (
+          r.dy_nickname ?? "—"
+        ),
+    },
     { id: "uniq", header: "抖音号", cell: (r) => <span className="font-mono text-xs">{r.dy_unique_id ?? "—"}</span> },
     {
       id: "account",
@@ -153,19 +253,21 @@ export function StaffAccountsPage() {
     {
       id: "status",
       header: "运营状态",
-      cell: (r) =>
-        api ? (
-          <select
-            className="rounded border border-zz-border px-2 py-1 text-xs"
-            value={r.ops_status}
+      cell: (r) => {
+        const st = normalizeBizAccountOpsStatusUi(r.ops_status);
+        return api ? (
+          <SelectInput
+            className="h-8 w-full py-1 text-xs sm:w-auto"
+            value={st}
             disabled={
               patchOpsMut.isPending &&
               patchOpsMut.variables?.accountId === r.account_id &&
               patchOpsMut.variables?.platform === r.platform
             }
             onChange={(ev) => {
-              const v = ev.target.value === "paused" ? "paused" : "running";
-              if (v === r.ops_status) {
+              const raw = ev.target.value;
+              const v = raw === "paused" ? "paused" : raw === "revoked" ? "revoked" : "running";
+              if (v === st) {
                 return;
               }
               patchOpsMut.mutate({ platform: r.platform, accountId: r.account_id, ops_status: v });
@@ -173,12 +275,16 @@ export function StaffAccountsPage() {
           >
             <option value="running">运营中</option>
             <option value="paused">暂停</option>
-          </select>
-        ) : r.ops_status === "running" ? (
+            <option value="revoked">已撤销</option>
+          </SelectInput>
+        ) : st === "running" ? (
           "运营中"
+        ) : st === "revoked" ? (
+          "已撤销"
         ) : (
           "暂停"
-        ),
+        );
+      },
     },
     ...(api
       ? ([
@@ -186,26 +292,27 @@ export function StaffAccountsPage() {
             id: "more",
             header: "操作",
             cell: (r: MockAccount) => (
-              <div className="flex flex-nowrap items-center gap-2">
-                <button
-                  type="button"
-                  className="inline-flex shrink-0 items-center justify-center rounded-full border border-zz-border bg-white px-2.5 py-1 text-xs font-medium text-zz-near shadow-sm transition hover:border-zz-blue hover:text-zz-blue focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/30"
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => {
                     setFormErr(null);
                     setTableActionErr(null);
                     setEditAccount(r);
                     setENick(r.dy_nickname ?? "");
                     setEUnique(r.dy_unique_id ?? "");
+                    setEUserUrl(r.dy_user_url ?? "");
                     setEEntId(r.dy_leads_enterprise_id ?? "");
                     setEEntName(r.dy_leads_enterprise_name ?? "");
                     setERemark(r.remark ?? "");
                   }}
                 >
                   编辑资料
-                </button>
-                <button
-                  type="button"
-                  className="inline-flex shrink-0 items-center justify-center rounded-full border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 shadow-sm transition hover:bg-red-50 focus-visible:outline focus-visible:ring-2 focus-visible:ring-red-300/40 disabled:opacity-50"
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
                   disabled={
                     delAccMut.isPending &&
                     delAccMut.variables?.accountId === r.account_id &&
@@ -219,7 +326,7 @@ export function StaffAccountsPage() {
                   }}
                 >
                   删除
-                </button>
+                </Button>
               </div>
             ),
           },
@@ -228,13 +335,12 @@ export function StaffAccountsPage() {
   ];
 
   return (
-    <div>
+    <div className="space-y-8">
       <PageHeader
         title="员工账号管理"
-        description="维护本租户在抖音矩阵侧绑定的业务账号；连接控制台服务且具备租户管理员权限时，可在此新增账号并启停运营状态。"
       />
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b border-zz-border-light pb-px">
-        <div className="flex gap-2" role="tablist" aria-label="账号类型">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-zz-border-light pb-px">
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label="账号类型">
           <button
             type="button"
             role="tab"
@@ -242,7 +348,7 @@ export function StaffAccountsPage() {
             className={cardPanelTabClass(tab === "enterprise_staff")}
             onClick={() => setTab("enterprise_staff")}
           >
-            企业员工号
+            企业员工号 {enterpriseCount ?? "…"}
           </button>
           <button
             type="button"
@@ -251,13 +357,13 @@ export function StaffAccountsPage() {
             className={cardPanelTabClass(tab === "personal_authorized")}
             onClick={() => setTab("personal_authorized")}
           >
-            员工个人号授权
+            员工个人号授权 {personalCount ?? "…"}
           </button>
         </div>
         {api ? (
-          <button
-            type="button"
-            className="shrink-0 rounded-full border border-zz-border bg-white px-4 py-2 text-sm font-medium text-zz-near shadow-sm transition hover:border-zz-near hover:bg-zz-snow focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/30"
+          <Button
+            variant="secondary"
+            size="md"
             onClick={() => {
               setFormErr(null);
               setTableActionErr(null);
@@ -266,73 +372,100 @@ export function StaffAccountsPage() {
             }}
           >
             添加账号
-          </button>
+          </Button>
         ) : null}
       </div>
 
-      {api && createFormOpen ? (
-        <section className="mb-8 max-w-2xl rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-6">
-          <h2 className="text-sm font-semibold text-zz-near">新建账号</h2>
-          <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={(ev) => onCreate(ev)}>
-            <label className="block text-sm sm:col-span-2">
-              抖音固定账号 ID（纯数字，与线索版后台一致）
-              <input
-                className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 font-mono text-sm"
-                value={newAccountId}
-                onChange={(ev) => setNewAccountId(ev.target.value)}
-                placeholder="例如 7123456789012345678"
-              />
-            </label>
-            <label className="block text-sm">
-              账号类型（与当前页签一致时可不改）
-              <select
-                className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                value={newKind}
-                onChange={(ev) => setNewKind(ev.target.value as typeof newKind)}
-              >
-                <option value="enterprise_staff">企业员工号</option>
-                <option value="personal_authorized">员工个人号授权</option>
-              </select>
-            </label>
-            <label className="block text-sm">
-              线索版企业主体标识
-              <input
-                className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 font-mono text-sm"
-                value={newEnt}
-                onChange={(ev) => setNewEnt(ev.target.value)}
-                placeholder="与矩阵后台主体一致，如 ent-001"
-              />
-            </label>
-            <label className="block text-sm">
-              展示昵称（可选）
-              <input
-                className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                value={newNick}
-                onChange={(ev) => setNewNick(ev.target.value)}
-              />
-            </label>
-            <label className="block text-sm">
-              抖音号（可选，对外展示的短号）
-              <input
-                className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                value={newUnique}
-                onChange={(ev) => setNewUnique(ev.target.value)}
-              />
-            </label>
+      {api ? (
+        <OverlaySectionCard
+          open={createFormOpen}
+          onClose={() => {
+            setFormErr(null);
+            setCreateFormOpen(false);
+          }}
+          title="新建账号"
+          titleAs="h2"
+          className="sm:max-w-2xl"
+        >
+          <form className="grid gap-4 sm:grid-cols-2" onSubmit={(ev) => onCreate(ev)}>
+            <Field
+              className="sm:col-span-2"
+              label="抖音固定账号 ID（纯数字，与线索版后台一致）"
+            >
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  mono
+                  value={newAccountId}
+                  onChange={(ev) => setNewAccountId(ev.target.value)}
+                  placeholder="例如 7123456789012345678"
+                />
+              )}
+            </Field>
+            <Field label="账号类型（与当前页签一致时可不改）">
+              {({ id, describedBy }) => (
+                <SelectInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={newKind}
+                  onChange={(ev) => setNewKind(ev.target.value as typeof newKind)}
+                >
+                  <option value="enterprise_staff">企业员工号</option>
+                  <option value="personal_authorized">员工个人号授权</option>
+                </SelectInput>
+              )}
+            </Field>
+            <Field label="线索版企业主体">
+              {({ id, describedBy }) =>
+                registeredEnterprises.length ? (
+                  <SelectInput id={id} aria-describedby={describedBy} value={newEnt} onChange={(ev) => setNewEnt(ev.target.value)}>
+                    <option value="">请选择已登记主体</option>
+                    {registeredEnterprises.map((e) => (
+                      <option key={e.dy_leads_enterprise_id} value={e.dy_leads_enterprise_id}>
+                        {(e.display_name ?? "").trim() || e.dy_leads_enterprise_id} ({e.dy_leads_enterprise_id})
+                      </option>
+                    ))}
+                  </SelectInput>
+                ) : (
+                  <div className="text-sm text-zz-muted">请先在「系统设置 → 组织与成员」登记企业主体</div>
+                )
+              }
+            </Field>
+            <Field label="账户名字（可选）">
+              {({ id, describedBy }) => (
+                <TextInput id={id} aria-describedby={describedBy} value={newNick} onChange={(ev) => setNewNick(ev.target.value)} />
+              )}
+            </Field>
+            <Field label="抖音号（可选，对外展示的短号）">
+              {({ id, describedBy }) => (
+                <TextInput id={id} aria-describedby={describedBy} value={newUnique} onChange={(ev) => setNewUnique(ev.target.value)} />
+              )}
+            </Field>
+            <Field className="sm:col-span-2" label="主页（可选）">
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={newUserUrl}
+                  onChange={(ev) => setNewUserUrl(ev.target.value)}
+                  placeholder="https://www.douyin.com/user/..."
+                />
+              )}
+            </Field>
             {formErr ? (
-              <p className="text-sm text-red-700 sm:col-span-2">{formErr}</p>
+              <div className="sm:col-span-2">
+                <Banner kind="error">{formErr}</Banner>
+              </div>
             ) : null}
             <div className="flex flex-wrap gap-2 sm:col-span-2">
-              <button
-                type="submit"
-                disabled={createMut.isPending}
-                className="rounded-full bg-zz-black px-4 py-2 text-sm text-white disabled:opacity-50"
-              >
+              <Button type="submit" variant="primary" size="md" isLoading={createMut.isPending}>
                 {createMut.isPending ? "创建中…" : "创建账号"}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="rounded-full border border-zz-border px-4 py-2 text-sm"
+                variant="secondary"
+                size="md"
                 disabled={createMut.isPending}
                 onClick={() => {
                   setFormErr(null);
@@ -340,78 +473,110 @@ export function StaffAccountsPage() {
                 }}
               >
                 取消
-              </button>
+              </Button>
             </div>
           </form>
-        </section>
+        </OverlaySectionCard>
       ) : !api ? (
-        <p className="mb-6 rounded-lg border border-zz-border-light bg-zz-snow/40 px-4 py-3 text-sm text-zz-muted">
-          未连接控制台接口时为本地演示列表；在环境变量中配置接口地址并登录后，可在此真实新增与维护账号。
-        </p>
+        <Banner kind="info">未连接控制台接口时为本地演示列表；在环境变量中配置接口地址并登录后，可在此真实新增与维护账号。</Banner>
       ) : null}
 
       {api && editAccount ? (
-        <section className="mb-8 max-w-2xl rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-6">
-          <h2 className="text-sm font-semibold text-zz-near">编辑账号</h2>
-          <p className="mt-1 text-xs text-zz-muted">
-            抖音固定账号 ID：<span className="font-mono text-zz-near">{editAccount.account_id}</span>
-          </p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <label className="block text-sm">
-              展示昵称
-              <input className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm" value={eNick} onChange={(ev) => setENick(ev.target.value)} />
-            </label>
-            <label className="block text-sm">
-              抖音号
-              <input className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm" value={eUnique} onChange={(ev) => setEUnique(ev.target.value)} />
-            </label>
-            <label className="block text-sm">
-              线索版企业主体标识
-              <input className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 font-mono text-sm" value={eEntId} onChange={(ev) => setEEntId(ev.target.value)} />
-            </label>
-            <label className="block text-sm">
-              企业主体名称
-              <input className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm" value={eEntName} onChange={(ev) => setEEntName(ev.target.value)} />
-            </label>
-            <label className="block text-sm sm:col-span-2">
-              备注（可选）
-              <input className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm" value={eRemark} onChange={(ev) => setERemark(ev.target.value)} />
-            </label>
-          </div>
-          {formErr ? <p className="mt-2 text-sm text-red-700">{formErr}</p> : null}
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="rounded-full bg-zz-black px-4 py-2 text-sm text-white disabled:opacity-50"
-              disabled={saveDetailMut.isPending}
-              onClick={() => saveDetailMut.mutate()}
-            >
-              {saveDetailMut.isPending ? "保存中…" : "保存"}
-            </button>
-            <button
-              type="button"
-              className="rounded-full border border-zz-border px-4 py-2 text-sm"
-              onClick={() => {
-                setFormErr(null);
-                setEditAccount(null);
-              }}
-            >
-              关闭
-            </button>
-          </div>
-        </section>
+        <OverlaySectionCard
+          open
+          onClose={() => {
+            setFormErr(null);
+            setEditAccount(null);
+          }}
+          title="编辑账号"
+          titleAs="h2"
+          ariaLabel="编辑员工账号资料"
+          ariaLabelledBy="staff-account-edit-heading"
+          className="sm:max-w-2xl"
+          description={
+            <>
+              <span id="staff-account-edit-heading">抖音固定账号 ID</span>
+              <span className="font-mono text-zz-near"> {editAccount.account_id}</span>
+            </>
+          }
+        >
+          <div className="grid gap-x-8 gap-y-6 sm:grid-cols-2">
+              <Field className="!gap-2" label="账户名字">
+                {({ id }) => <TextInput id={id} value={eNick} onChange={(ev) => setENick(ev.target.value)} />}
+              </Field>
+              <Field className="!gap-2" label="抖音号">
+                {({ id }) => <TextInput id={id} value={eUnique} onChange={(ev) => setEUnique(ev.target.value)} />}
+              </Field>
+              <Field className="!gap-2 sm:col-span-2" label="主页">
+                {({ id }) => (
+                  <TextInput
+                    id={id}
+                    value={eUserUrl}
+                    onChange={(ev) => setEUserUrl(ev.target.value)}
+                    placeholder="https://www.douyin.com/user/..."
+                  />
+                )}
+              </Field>
+              <Field className="!gap-2 min-w-0" label="线索版企业主体">
+                {({ id }) =>
+                  enterprisePickerRows.length ? (
+                    <SelectInput
+                      id={id}
+                      className="w-full max-w-full"
+                      value={eEntId}
+                      onChange={(ev) => {
+                        const vid = ev.target.value;
+                        setEEntId(vid);
+                        const hit = enterprisePickerRows.find((x) => sameDyLeadsEnterpriseId(x.dy_leads_enterprise_id, vid));
+                        if (hit?.display_name) {
+                          setEEntName(hit.display_name ?? "");
+                        }
+                      }}
+                    >
+                      {enterprisePickerRows.map((e) => (
+                        <option key={e.dy_leads_enterprise_id} value={e.dy_leads_enterprise_id}>
+                          {(e.display_name ?? "").trim() || e.dy_leads_enterprise_id}
+                          {(e.status ?? "active") !== "active" ? "（已归档）" : ""} ({e.dy_leads_enterprise_id})
+                        </option>
+                      ))}
+                    </SelectInput>
+                  ) : (
+                    <span className="text-sm text-zz-muted">无可用主体；请在「组织与成员」登记</span>
+                  )
+                }
+              </Field>
+              <Field className="!gap-2 min-w-0" label="企业主体名称">
+                {({ id }) => <TextInput id={id} value={eEntName} onChange={(ev) => setEEntName(ev.target.value)} />}
+              </Field>
+              <Field className="!gap-2 sm:col-span-2" label="备注（可选）">
+                {({ id }) => <TextInput id={id} value={eRemark} onChange={(ev) => setERemark(ev.target.value)} />}
+              </Field>
+            </div>
+            {formErr ? (
+              <div className="mt-5">
+                <Banner kind="error">{formErr}</Banner>
+              </div>
+            ) : null}
+            <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-zz-border-light pt-6 sm:justify-end">
+              <Button
+                variant="secondary"
+                size="md"
+                onClick={() => {
+                  setFormErr(null);
+                  setEditAccount(null);
+                }}
+              >
+                关闭
+              </Button>
+              <Button variant="primary" size="md" isLoading={saveDetailMut.isPending} onClick={() => saveDetailMut.mutate()}>
+                {saveDetailMut.isPending ? "保存中…" : "保存"}
+              </Button>
+            </div>
+        </OverlaySectionCard>
       ) : null}
 
-      {query.isError ? (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          加载失败：{formatQueryError(query.error)}
-        </div>
-      ) : null}
-      {tableActionErr ? (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
-          {tableActionErr}
-        </div>
-      ) : null}
+      {query.isError ? <Banner kind="error">加载失败：{formatQueryError(query.error)}</Banner> : null}
+      {tableActionErr ? <Banner kind="error">{tableActionErr}</Banner> : null}
       <DataTable
         columns={accountColumns}
         rows={query.data ?? []}

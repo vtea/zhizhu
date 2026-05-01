@@ -1,6 +1,7 @@
 import { DataTable, type DataColumn } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { PaginationBar } from "@/components/PaginationBar";
+import { Banner, Button, Field, SectionCard, SelectInput } from "@/components/ui";
 import { listAuditEvents, postExportRequest, type AuditEventRow } from "@/api/consoleExtras";
 import { getApiBaseUrl } from "@/api/env";
 import { useTenantId } from "@/hooks/useTenantId";
@@ -71,52 +72,51 @@ export function AuditEventsPage() {
       <PageHeader
         titleAs="h2"
         title="审计与导出"
-        description="集中查看登录、权限变更、导出申请等安全相关事件；大文件导出走异步处理，可在后续版本中对接下载任务。"
       />
       {!api ? (
-        <p className="rounded-lg border border-zz-border-light bg-zz-snow/40 px-4 py-3 text-sm text-zz-muted">
-          请配置控制台接口并登录后加载审计列表。
-        </p>
+        <Banner kind="info">请配置控制台接口并登录后加载审计列表。</Banner>
       ) : (
         <>
-          <section className="max-w-lg rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-6">
-            <h2 className="text-sm font-semibold text-zz-near">异步导出（审计占位）</h2>
-            <p className="mt-1 text-xs text-zz-muted">提交后会在审计记录中留痕，便于合规与追溯。</p>
-            <div className="mt-4 flex flex-wrap items-end gap-3">
-              <label className="text-sm">
-                范围
-                <select
-                  className="mt-1 block rounded-lg border border-zz-border px-3 py-2 text-sm"
-                  value={exportScope}
-                  onChange={(ev) => setExportScope(ev.target.value)}
-                >
-                  <option value="leads">线索</option>
-                  <option value="accounts">员工账号</option>
-                  <option value="videos">视频</option>
-                  <option value="tasks">任务</option>
-                </select>
-              </label>
-              <button
-                type="button"
-                className="rounded-full bg-zz-black px-4 py-2 text-sm text-white disabled:opacity-50"
-                disabled={exportMut.isPending}
+          <SectionCard
+            title="异步导出（审计占位）"
+            titleAs="h2"
+            description="提交后会在审计记录中留痕，便于合规与追溯。"
+            className="max-w-lg"
+          >
+            <div className="flex flex-wrap items-end gap-3">
+              <Field label="范围">
+                {({ id }) => (
+                  <SelectInput id={id} value={exportScope} onChange={(ev) => setExportScope(ev.target.value)}>
+                    <option value="leads">线索</option>
+                    <option value="accounts">员工账号</option>
+                    <option value="videos">视频</option>
+                    <option value="tasks">任务</option>
+                  </SelectInput>
+                )}
+              </Field>
+              <Button
+                variant="primary"
+                size="md"
+                isLoading={exportMut.isPending}
                 onClick={() => {
                   setBanner(null);
                   exportMut.mutate();
                 }}
               >
                 {exportMut.isPending ? "提交…" : "记录导出申请"}
-              </button>
+              </Button>
             </div>
             {banner ? (
-              <p className={`mt-3 text-sm ${banner.kind === "err" ? "text-red-700" : "text-zz-blue"}`}>{banner.text}</p>
+              <div className="mt-3">
+                <Banner kind={banner.kind === "err" ? "error" : "info"}>{banner.text}</Banner>
+              </div>
             ) : null}
-          </section>
+          </SectionCard>
 
           <section>
             <h2 className="mb-3 text-sm font-semibold text-zz-near">审计事件</h2>
             {auditQ.isError ? (
-              <p className="text-sm text-red-700">加载失败：{formatQueryError(auditQ.error, "加载失败")}</p>
+              <Banner kind="error">加载失败：{formatQueryError(auditQ.error, "加载失败")}</Banner>
             ) : (
               <>
                 <DataTable

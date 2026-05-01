@@ -7,8 +7,10 @@ import { isValidTenantSlug } from "./config";
 export type ClientStateFile = {
   /** 当前租户 slug，用于打开控制台深链 */
   tenantId: string;
-  /** 设备 ID（与 Web「设备绑定」一致）；WSS 联调前可空 */
-  deviceId?: string;
+  /** 设备 ID（与 Web「设备绑定」一致）；WSS 联调前可空。写入时仅传 `null` 表示从本机清除；`""` 与 `undefined` 一样保留盘上值 */
+  deviceId?: string | null;
+  /** Runner / WSS：`device-bind/consume` 返回的 Bearer，不落渲染进程 IPC。仅传 `null` 表示清除；`""` 保留盘上值 */
+  deviceAccessToken?: string | null;
 };
 
 const STATE_FILENAME = "client-state.json";
@@ -18,6 +20,21 @@ const STALE_TMP_RE = /^client-state\.json\.\d+\.\d+\.[a-f0-9]{8}\.tmp$/i;
 
 /** 状态文件异常膨胀时截断，避免 JSON.parse / 正则拖垮进程 */
 const MAX_STATE_FILE_CHARS = 128 * 1024;
+
+/** Runner device_access_token（JWT）合理上界，防止异常 JSON 撑爆进程 */
+const MAX_DEVICE_ACCESS_TOKEN_CHARS = 16 * 1024;
+
+function normalizeDeviceAccessToken(tok: string | undefined): string | undefined {
+  if (!tok || typeof tok !== "string") {
+    return undefined;
+  }
+  const t = tok.trim();
+  if (t.length === 0) {
+    return undefined;
+  }
+  return t.length > MAX_DEVICE_ACCESS_TOKEN_CHARS ? t.slice(0, MAX_DEVICE_ACCESS_TOKEN_CHARS) : t;
+}
+
 
 /** 与 Web 设备 ID 合理长度一致，防止异常 JSON 撑爆内存 / IPC */
 const MAX_DEVICE_ID_LEN = 256;
@@ -118,7 +135,11 @@ export function readClientState(app: App): ClientStateFile {
     if (tenantId.length > 0 && !isValidTenantSlug(tenantId)) {
       tenantId = "";
     }
-    return { tenantId, deviceId };
+    let deviceAccessToken: string | undefined;
+    if (typeof j.deviceAccessToken === "string" && j.deviceAccessToken.trim().length > 0) {
+      deviceAccessToken = normalizeDeviceAccessToken(j.deviceAccessToken);
+    }
+    return { tenantId, deviceId, deviceAccessToken };
   } catch {
     const mDev = raw.match(/"deviceId"\s*:\s*"([^"]+)"/);
     const deviceId = normalizeDeviceId(mDev?.[1]?.trim());
@@ -162,16 +183,55 @@ export function writeClientState(app: App, next: ClientStateFile): void {
   if (!isValidTenantSlug(tenantNorm)) {
     throw new Error("tenantId 非法");
   }
-  const rawDev: unknown = next.deviceId;
-  const deviceIn =
-    typeof rawDev === "string" && rawDev.trim().length > 0
-      ? rawDev.trim()
-      : typeof rawDev === "number" && Number.isInteger(rawDev)
-        ? String(rawDev)
-        : undefined;
+  /** 只读一次盘，避免 deviceId/token 分项合并时语义不一致或未定义属性误清空 */
+  let previous: ClientStateFile;
+  try {
+    previous = readClientState(app);
+  } catch {
+    previous = { tenantId: "" };
+  }
+
+  /** 未传键或值为 `undefined`：沿用盘上值；仅 `null` 显式清除。传 `""`/全空白字符串时与未传键相同，保留盘上值 */
+  let outDeviceId: string | undefined;
+  if (!("deviceId" in next) || next.deviceId === undefined) {
+    const prev = previous.deviceId;
+    outDeviceId = prev == null || typeof prev !== "string" ? undefined : normalizeDeviceId(prev.trim());
+  } else if (next.deviceId === null) {
+    outDeviceId = undefined;
+  } else {
+    const raw = next.deviceId;
+    const rawStr =
+      typeof raw === "string" ? raw.trim() : typeof raw === "number" && Number.isInteger(raw) ? String(raw) : "";
+    if (rawStr.length === 0) {
+      const prev = previous.deviceId;
+      outDeviceId = prev == null || typeof prev !== "string" ? undefined : normalizeDeviceId(prev.trim());
+    } else {
+      outDeviceId = normalizeDeviceId(rawStr);
+    }
+  }
+
+  let outToken: string | undefined;
+  if (!("deviceAccessToken" in next) || next.deviceAccessToken === undefined) {
+    outToken =
+      typeof previous.deviceAccessToken === "string" ? normalizeDeviceAccessToken(previous.deviceAccessToken) : undefined;
+  } else if (next.deviceAccessToken === null) {
+    outToken = undefined;
+  } else {
+    const s = String(next.deviceAccessToken).trim();
+    if (s.length === 0) {
+      outToken =
+        typeof previous.deviceAccessToken === "string"
+          ? normalizeDeviceAccessToken(previous.deviceAccessToken)
+          : undefined;
+    } else {
+      outToken = normalizeDeviceAccessToken(s);
+    }
+  }
+
   const body: ClientStateFile = {
     tenantId: tenantNorm,
-    deviceId: normalizeDeviceId(deviceIn),
+    ...(outDeviceId ? { deviceId: outDeviceId } : {}),
+    ...(outToken ? { deviceAccessToken: outToken } : {}),
   };
   const payload = JSON.stringify(body, null, 2);
   const tmp = `${p}.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}.tmp`;

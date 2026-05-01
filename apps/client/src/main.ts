@@ -4,21 +4,220 @@ import { promisify } from "node:util";
 import { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage } from "electron";
 import fs from "node:fs";
 import path from "node:path";
-import type { ApiHealthDto, ApiReachSnapshot, BindDeviceResult, ClientStateDto, ConsolePathKey, OpenUrlResult } from "./sharedTypes";
+import type {
+  ApiHealthDto,
+  ApiReachSnapshot,
+  BindDeviceResult,
+  ClientDiagnosticsDto,
+  ClientStateDto,
+  ClientUpdateCheckDto,
+  ConsolePathKey,
+  OpenUrlResult,
+  PlaywrightBrowserProfileRecord,
+  RunnerOpsAccountDto,
+  RunnerSmokeTestResultDto,
+  RunnerTaskListDto,
+  RunnerVisibleLeadsEnterpriseDto,
+} from "./sharedTypes";
+import { buildClientDiagnosticsDto, buildUpdateCheckPlaceholder } from "./clientDiagnostics";
 import { probeApiHealth } from "./apiProbe";
 import { cleanupStaleClientStateTemps, readClientState, writeClientState } from "./clientState";
-import { bindDeviceConsumeApi } from "./deviceBind";
+import { bindDeviceConsumeApi, postDeviceRestHeartbeat } from "./deviceBind";
 import { fetchTenantExistsOnServer } from "./tenantRegistry";
 import { CONSOLE_QUICK_LINKS, CONSOLE_PATHS, buildConsoleUrl } from "./consolePaths";
 import { DEFAULT_API_BASE, DEFAULT_WEB_BASE, getApiBaseUrl, getDefaultTenantFromEnv, getWebBaseUrl, isValidTenantSlug } from "./config";
 import { startDeviceWssIfConfigured, stopDeviceWss } from "./wssClient";
 import { initMainClientLogMirror, setClientLogBroadcaster, setClientLogMirrorCapturing } from "./clientLogger";
+import {
+  createPlaywrightProfile,
+  deletePlaywrightProfile,
+  getDefaultPlaywrightProfileId,
+  listPlaywrightProfiles,
+  setDefaultPlaywrightProfile,
+  updatePlaywrightBrowserProfile,
+} from "./playwrightBrowserProfiles";
+import {
+  enqueuePlaywrightShellProfileSync,
+  getPlaywrightShellSyncStatus,
+  runPlaywrightShellSyncNow,
+  startPlaywrightShellSyncPeriodicLoop,
+  stopPlaywrightShellSyncPeriodicLoop,
+} from "./playwrightProfileRemoteSync";
+import { getPlaywrightHeadedStatus, spawnPlaywrightHeaded, stopPlaywrightHeaded } from "./playwrightHeadedProcess";
+import { runStartupRunnerEnvironmentDialog, runnerSmokeWithEnvPrompts } from "./runnerEnvStartup";
+import {
+  acknowledgeDraftConflict,
+  deleteDraft as automationRulesDeleteDraft,
+  forkFromPublished as automationRulesForkFromPublished,
+  listAutomationRules as automationRulesListLocal,
+  saveDraft as automationRulesSaveDraft,
+} from "./automationRules";
+import {
+  enqueueAutomationRuleSync,
+  getAutomationRuleSyncStatus,
+  runAutomationRuleSyncNow,
+  startAutomationRuleSyncPeriodicLoop,
+  stopAutomationRuleSyncPeriodicLoop,
+} from "./automationRuleSync";
+import { trialRunAutomationRule } from "./automationRuleTrialRun";
+import { signalRunnerLoopTaskCancel } from "./runnerLoopCancel";
+import { clearTrialRunPrepareCancel, signalTrialRunPrepareCancel } from "./trialRunPrepareCancel";
+import { cancelRegisteredTaskRuleChildren, type CancelTaskRuleChildrenScope } from "./taskRuleChildRegistry";
+import { openTraceViewer } from "./automationRuleTraceViewer";
+import { isCodegenRunning, openCodegen, stopCodegen } from "./automationRuleCodegen";
+import {
+  getRunnerLoopStatus,
+  runRunnerLoopOnce,
+  startRunnerLoop,
+  stopRunnerLoop,
+} from "./runnerLoop";
+import { appendTaskCenterRun, listTaskCenterRuns } from "./taskCenterLedger";
+import {
+  clearTaskLocalOverride,
+  getTaskLocalOverride,
+  listTaskLocalOverrides,
+  setTaskLocalOverride,
+} from "./taskLocalOverrides";
+
+function untrustedDiagnosticsFallback(): ClientDiagnosticsDto {
+  return {
+    npmClientVersion: null,
+    npmRunnerVersion: null,
+    playwrightNpmVersion: null,
+    chromiumMarkerVersion: null,
+    chromiumNeedsInstall: false,
+    playwrightCliResolved: false,
+    chromiumUsableOk: false,
+    chromiumUsableDetail: "不可信上下文：未读取完整诊断（仅占位）。",
+    runnerCliResolved: false,
+    electronAppVersion: app.getVersion(),
+    electronRuntimeVersion: "",
+    bundledNodeVersion: "",
+    runnerNodeDetected: false,
+    runnerNodeTried: [],
+    userDataPath: "",
+    isPackaged: false,
+    platform: "",
+    zhizhuEnvHints: [],
+  };
+}
+
+function untrustedUpdateFallback(): ClientUpdateCheckDto {
+  return {
+    currentVersion: app.getVersion(),
+    message: "来源页面不受信任，未检查更新。",
+    releasesUrl: null,
+    releasesPageConfigured: false,
+  };
+}
 
 const execFileAsync = promisify(execFile);
 
 const mainState = {
   tenantId: getDefaultTenantFromEnv(),
 };
+
+type RunnerApiContext = {
+  tenantId: string;
+  token: string;
+  apiRoot: string;
+};
+
+function readRunnerApiContext(): RunnerApiContext | null {
+  const st = readClientState(app);
+  const token = typeof st.deviceAccessToken === "string" ? st.deviceAccessToken.trim() : "";
+  const tenantId = typeof st.tenantId === "string" ? st.tenantId.trim().toLowerCase() : "";
+  const apiRoot = getApiBaseUrl().trim();
+  if (!token || !tenantId || !apiRoot) {
+    return null;
+  }
+  return { tenantId, token, apiRoot: apiRoot.replace(/\/?$/, "/") };
+}
+
+async function runnerGetJson<T>(
+  ctx: RunnerApiContext,
+  suffix: string,
+): Promise<{ ok: true; data: T } | { ok: false; status: number; error: string }> {
+  let url = "";
+  try {
+    url = new URL(`api/v1/tenants/${encodeURIComponent(ctx.tenantId)}${suffix}`, ctx.apiRoot).href;
+  } catch (e) {
+    return { ok: false, status: 0, error: `URL 拼装失败：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      signal: ctrl.signal,
+      headers: { Authorization: `Bearer ${ctx.token}`, Accept: "application/json" },
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
+  }
+  clearTimeout(timer);
+  if (!res.ok) {
+    const raw = await res.text().catch(() => "");
+    try {
+      const parsed = JSON.parse(raw) as { error?: unknown };
+      if (typeof parsed.error === "string" && parsed.error.trim()) {
+        return { ok: false, status: res.status, error: parsed.error.trim() };
+      }
+    } catch {
+      /* noop */
+    }
+    return { ok: false, status: res.status, error: raw.slice(0, 300) || `HTTP ${res.status}` };
+  }
+  const data = (await res.json().catch(() => ({}))) as T;
+  return { ok: true, data };
+}
+
+async function runnerPatchJson(
+  ctx: RunnerApiContext,
+  suffix: string,
+  body: unknown,
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  let url = "";
+  try {
+    url = new URL(`api/v1/tenants/${encodeURIComponent(ctx.tenantId)}${suffix}`, ctx.apiRoot).href;
+  } catch (e) {
+    return { ok: false, status: 0, error: `URL 拼装失败：${e instanceof Error ? e.message : String(e)}` };
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "PATCH",
+      signal: ctrl.signal,
+      headers: {
+        Authorization: `Bearer ${ctx.token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
+  }
+  clearTimeout(timer);
+  if (!res.ok) {
+    const raw = await res.text().catch(() => "");
+    try {
+      const parsed = JSON.parse(raw) as { error?: unknown };
+      if (typeof parsed.error === "string" && parsed.error.trim()) {
+        return { ok: false, status: res.status, error: parsed.error.trim() };
+      }
+    } catch {
+      /* noop */
+    }
+    return { ok: false, status: res.status, error: raw.slice(0, 300) || `HTTP ${res.status}` };
+  }
+  return { ok: true };
+}
 
 /** 防止渲染端超时/连点导致主进程并发两次 consume，把一次性码悄悄用掉 */
 let bindDeviceInFlight = false;
@@ -37,12 +236,52 @@ let primaryBootstrapFinished = false;
 
 let tray: Tray | null = null;
 
+function afterShellPlaywrightProfilesChanged(): void {
+  enqueuePlaywrightShellProfileSync(app);
+  rebuildTrayMenu();
+}
+
+function buildPlaywrightVisualBrowserMenuItems(): Electron.MenuItemConstructorOptions[] {
+  const profs = listPlaywrightProfiles(app);
+  const defId = getDefaultPlaywrightProfileId(app);
+  const defaultOpenId = defId ?? profs[0]?.id ?? "";
+  const items: Electron.MenuItemConstructorOptions[] = [
+    {
+      label:
+        profs.length === 0
+          ? "使用默认配置打开可视化浏览器（尚未创建配置）"
+          : "使用默认配置打开可视化浏览器",
+      enabled: profs.length > 0 && defaultOpenId.length > 0,
+      click: (): void => {
+        if (defaultOpenId.length === 0) return;
+        void spawnPlaywrightHeaded(app, defaultOpenId);
+      },
+    },
+    { type: "separator" },
+  ];
+  if (profs.length === 0) {
+    items.push({ label: "（请先在窗口内「Playwright 浏览器」页新建）", enabled: false });
+    return items;
+  }
+  for (const p of profs.slice(0, 32)) {
+    const tag = p.id === defId ? " · 默认" : "";
+    items.push({
+      label: `${p.label}（${p.slug}）${tag}`,
+      click: (): void => {
+        void spawnPlaywrightHeaded(app, p.id);
+      },
+    });
+  }
+  return items;
+}
+
 function syncWssFromDisk(): void {
   try {
     const disk = readClientState(app);
     const did = disk.deviceId?.trim();
-    if (did && isValidTenantSlug(mainState.tenantId)) {
-      startDeviceWssIfConfigured(mainState.tenantId, did);
+    const tid = disk.tenantId?.trim() ?? "";
+    if (did && isValidTenantSlug(tid)) {
+      startDeviceWssIfConfigured(app);
     } else {
       stopDeviceWss();
     }
@@ -78,11 +317,28 @@ function rebuildTrayMenu(): void {
       createWindow();
     }
   };
+  const openAutomationRulesTab = (): void => {
+    showMain();
+    const w = getLiveWindows()[0];
+    if (w && !w.isDestroyed() && isTrustedRendererIpcSender(w.webContents)) {
+      try {
+        w.webContents.send("request-tab", "automation-rules");
+      } catch (e) {
+        console.error("[zhizhu-client] tray 切到自动化规则 tab 失败", e);
+      }
+    }
+  };
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "打开控制台（浏览器）", click: openWeb },
       { label: "显示主窗口", click: showMain },
+      { label: "自动化规则", click: openAutomationRulesTab },
       { label: "切换客户端日志", click: requestToggleClientLogInFocusedShell },
+      { label: "Runner Playwright 自检", click: requestTrayRunnerSmokeTest },
+      {
+        label: "Playwright 可视化浏览器",
+        submenu: buildPlaywrightVisualBrowserMenuItems(),
+      },
       { type: "separator" },
       { label: "退出", click: () => app.quit() },
     ]),
@@ -98,7 +354,7 @@ function initTray(): void {
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
     );
     tray = new Tray(icon);
-    tray.setToolTip("知竹客户端");
+    tray.setToolTip("知竹 · 自动化");
     rebuildTrayMenu();
   } catch (e) {
     console.error("[zhizhu-client] initTray failed", e);
@@ -232,6 +488,31 @@ function broadcastClientLogLineToTrustedShells(line: string): void {
   }
 }
 
+function mirrorRunnerSmokeToTrustedShells(r: RunnerSmokeTestResultDto): void {
+  const line = `[runner-smoke] ${r.ok ? "OK" : "FAIL"} exit=${String(r.exitCode)}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`;
+  console.log("[zhizhu-client]", line);
+  const chunk = line.length > 16_000 ? `${line.slice(0, 16_000)}\n…(truncated)` : line;
+  broadcastClientLogLineToTrustedShells(chunk);
+}
+
+function logRunnerSetupToShells(line: string): void {
+  console.log("[zhizhu-client]", line);
+  const chunk =
+    line.length > 16_000 ? `${line.slice(0, 16_000)}\n…(truncated)` : line;
+  broadcastClientLogLineToTrustedShells(`[runner-setup] ${chunk}`);
+}
+
+async function runnerSmokeUiFlow(): Promise<RunnerSmokeTestResultDto> {
+  const parent = BrowserWindow.getFocusedWindow() ?? getLiveWindows()[0] ?? null;
+  const result = await runnerSmokeWithEnvPrompts(logRunnerSetupToShells, parent);
+  mirrorRunnerSmokeToTrustedShells(result);
+  return result;
+}
+
+function requestTrayRunnerSmokeTest(): void {
+  void runnerSmokeUiFlow();
+}
+
 async function safeOpenExternal(url: string): Promise<OpenUrlResult> {
   let href: string;
   try {
@@ -297,11 +578,14 @@ function buildClientStateDto(): Omit<ClientStateDto, "apiBaseUrl" | "apiHealth">
   }
   const rawSaved = disk.tenantId.trim();
   const savedTenantId = rawSaved.length > 0 && isValidTenantSlug(rawSaved) ? rawSaved : null;
+  const hasDeviceAccessToken =
+    typeof disk.deviceAccessToken === "string" && disk.deviceAccessToken.trim().length > 0;
   return {
     webBaseUrl,
     effectiveTenantId: mainState.tenantId,
     savedTenantId,
     deviceId: disk.deviceId ?? null,
+    hasDeviceAccessToken,
   };
 }
 
@@ -409,6 +693,11 @@ function rebuildMenu(): void {
         label: "知竹",
         submenu: [
           { label: "切换客户端日志", accelerator: "CommandOrControl+Shift+L", click: requestToggleClientLogInFocusedShell },
+          { label: "Runner Playwright 自检", click: () => requestTrayRunnerSmokeTest() },
+          {
+            label: "Playwright 可视化浏览器",
+            submenu: buildPlaywrightVisualBrowserMenuItems(),
+          },
           { type: "separator" },
           { label: "关于", role: "about" },
           { type: "separator" },
@@ -529,11 +818,12 @@ function createWindow() {
     console.error("[zhizhu-client] 缺少 preload.js，请在 apps/client 执行 npm run build。路径:", preloadPath);
   }
   const win = new BrowserWindow({
-    width: 540,
-    height: 620,
-    minWidth: 400,
-    minHeight: 440,
+    width: 980,
+    height: 760,
+    minWidth: 820,
+    minHeight: 620,
     show: true,
+    title: "知竹 · 自动化",
     webPreferences: {
       ...(hasPreload ? { preload: preloadPath } : {}),
       contextIsolation: true,
@@ -586,7 +876,7 @@ function createWindow() {
     const detail = (err instanceof Error ? err.message : String(err)).slice(0, 500);
     const esc = (s: string) =>
       s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    const body = `<!DOCTYPE html><html lang="zh-Hans"><head><meta charset="utf-8"/><title>知竹</title></head><body style="font-family:system-ui;padding:16px;line-height:1.5"><h1 style="font-size:1rem">无法加载客户端界面</h1><p style="font-size:0.875rem;color:#444">请确认在 <code>apps/client</code> 已执行 <code>npm run build</code>，且从包根目录启动 Electron。</p><p style="font-size:0.75rem;color:#666">${esc(detail)}</p></body></html>`;
+    const body = `<!DOCTYPE html><html lang="zh-Hans"><head><meta charset="utf-8"/><title>知竹</title><style>body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;line-height:1.5;color:#1a1a1a;margin:0}h1{font-size:1rem;margin:0 0 .4rem}.zz-fb-hint{font-size:.875rem;color:#444;margin:.25rem 0}.zz-fb-detail{font-size:.75rem;color:#666;margin:.4rem 0 0;word-break:break-word}</style></head><body><h1>无法加载客户端界面</h1><p class="zz-fb-hint">请确认在 <code>apps/client</code> 已执行 <code>npm run build</code>，且从包根目录启动 Electron。</p><p class="zz-fb-detail">${esc(detail)}</p></body></html>`;
     void win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(body)).catch((e2) => {
       if (!win.isDestroyed()) {
         console.error("[zhizhu-client] loadURL fallback failed:", e2);
@@ -628,6 +918,9 @@ void (function registerPrimaryInstanceAppHooks(): void {
   app.on("before-quit", () => {
     setClientLogMirrorCapturing(false);
     stopDeviceWss();
+    stopPlaywrightShellSyncPeriodicLoop();
+    stopAutomationRuleSyncPeriodicLoop();
+    stopRunnerLoop();
   });
 
   app.on("second-instance", () => {
@@ -717,6 +1010,7 @@ void (function registerPrimaryInstanceAppHooks(): void {
         effectiveTenantId: getDefaultTenantFromEnv(),
         savedTenantId: null,
         deviceId: null,
+        hasDeviceAccessToken: false,
       };
     }
     await new Promise<void>((resolve) => {
@@ -748,6 +1042,8 @@ void (function registerPrimaryInstanceAppHooks(): void {
       const disk = readClientState(app);
       const rawSaved = disk.tenantId.trim();
       const savedTenantId = rawSaved.length > 0 && isValidTenantSlug(rawSaved) ? rawSaved : null;
+      const hasDeviceAccessToken =
+        typeof disk.deviceAccessToken === "string" && disk.deviceAccessToken.trim().length > 0;
       return {
         webBaseUrl,
         apiBaseUrl,
@@ -755,8 +1051,852 @@ void (function registerPrimaryInstanceAppHooks(): void {
         effectiveTenantId: mainState.tenantId,
         savedTenantId,
         deviceId: disk.deviceId ?? null,
+        hasDeviceAccessToken,
       };
     }
+  });
+
+  ipcMain.handle("fetch-tenant-registry", async (event, tenantId: unknown): Promise<{ ok: true; exists: boolean } | { ok: false; error: string }> => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const t = typeof tenantId === "string" ? tenantId.trim() : String(tenantId ?? "").trim();
+    return fetchTenantExistsOnServer(t);
+  });
+
+  ipcMain.handle("get-client-diagnostics", async (event): Promise<ClientDiagnosticsDto> => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return untrustedDiagnosticsFallback();
+    }
+    try {
+      return await buildClientDiagnosticsDto();
+    } catch (e) {
+      console.error("[zhizhu-client] get-client-diagnostics", e);
+      return untrustedDiagnosticsFallback();
+    }
+  });
+
+  ipcMain.handle("check-client-update", async (event): Promise<ClientUpdateCheckDto> => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return untrustedUpdateFallback();
+    }
+    return buildUpdateCheckPlaceholder();
+  });
+
+  ipcMain.handle("open-releases-page", async (event): Promise<OpenUrlResult> => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const raw = process.env.ZHIZHU_RELEASES_PAGE_URL?.trim() ?? "";
+    if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+      return { ok: false, error: "未配置有效的 ZHIZHU_RELEASES_PAGE_URL（须为 http/https）。" };
+    }
+    return safeOpenExternal(raw);
+  });
+
+  ipcMain.handle(
+    "list-playwright-browser-profiles",
+    async (
+      event,
+    ): Promise<
+      | {
+          ok: true;
+          profiles: PlaywrightBrowserProfileRecord[];
+          defaultProfileId: string | null;
+        }
+      | { ok: false; error: string }
+    > => {
+      if (!isTrustedRendererIpcSender(event.sender)) {
+        return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+      }
+      try {
+        return {
+          ok: true as const,
+          profiles: listPlaywrightProfiles(app),
+          defaultProfileId: getDefaultPlaywrightProfileId(app),
+        };
+      } catch (e) {
+        /** readRegistry 已对常见路径做兜底，但磁盘 IO / 权限错误仍可能 throw；
+         * 让渲染进程拿到结构化错误而不是 IPC 通用 reject 文案，便于壳页提示用户。 */
+        console.error("[zhizhu-client] list-playwright-browser-profiles 失败：", e);
+        return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "create-playwright-browser-profile",
+    async (
+      event,
+      payload: unknown,
+    ): Promise<
+      { ok: true; profile: PlaywrightBrowserProfileRecord } | { ok: false; error: string }
+    > => {
+      if (!isTrustedRendererIpcSender(event.sender)) {
+        return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+      }
+      const o = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const slug = typeof o.slug === "string" ? o.slug : "";
+      const label = typeof o.label === "string" ? o.label : "";
+      const defaultStartPath =
+        typeof o.defaultStartPath === "string" ? o.defaultStartPath : undefined;
+      const created = createPlaywrightProfile(app, { slug, label, defaultStartPath });
+      if (created.ok) {
+        afterShellPlaywrightProfilesChanged();
+      }
+      return created;
+    },
+  );
+
+  ipcMain.handle(
+    "update-playwright-browser-profile",
+    async (
+      event,
+      payload: unknown,
+    ): Promise<{ ok: true; profile: PlaywrightBrowserProfileRecord } | { ok: false; error: string }> => {
+      if (!isTrustedRendererIpcSender(event.sender)) {
+        return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+      }
+      const o = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const profileId = typeof o.profileId === "string" ? o.profileId : "";
+      const patchRaw =
+        o.patch && typeof o.patch === "object" ? (o.patch as Record<string, unknown>) : {};
+      const patch: Parameters<typeof updatePlaywrightBrowserProfile>[2] = {};
+      if (typeof patchRaw.label === "string") patch.label = patchRaw.label;
+      if ("defaultStartPath" in patchRaw) {
+        if (patchRaw.defaultStartPath === null) {
+          patch.defaultStartPath = null;
+        } else if (typeof patchRaw.defaultStartPath === "string") {
+          patch.defaultStartPath = patchRaw.defaultStartPath;
+        }
+      }
+      if (typeof patchRaw.newSlug === "string") patch.newSlug = patchRaw.newSlug;
+      const out = updatePlaywrightBrowserProfile(app, profileId, patch);
+      if (out.ok) {
+        afterShellPlaywrightProfilesChanged();
+      }
+      return out;
+    },
+  );
+
+  ipcMain.handle(
+    "set-default-playwright-browser-profile",
+    async (
+      event,
+      profileId: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!isTrustedRendererIpcSender(event.sender)) {
+        return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+      }
+      const raw = typeof profileId === "string" ? profileId.trim() : "";
+      const out =
+        raw.length === 0 ? setDefaultPlaywrightProfile(app, null) : setDefaultPlaywrightProfile(app, raw);
+      if (out.ok) {
+        afterShellPlaywrightProfilesChanged();
+      }
+      return out;
+    },
+  );
+
+  ipcMain.handle(
+    "delete-playwright-browser-profile",
+    async (
+      event,
+      profileId: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!isTrustedRendererIpcSender(event.sender)) {
+        return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+      }
+      const id = typeof profileId === "string" ? profileId.trim() : "";
+      const out = deletePlaywrightProfile(app, id);
+      if (out.ok) {
+        afterShellPlaywrightProfilesChanged();
+      }
+      return out;
+    },
+  );
+
+  ipcMain.handle(
+    "open-playwright-headed-browser",
+    async (event, profileId: unknown): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!isTrustedRendererIpcSender(event.sender)) {
+        return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+      }
+      const id = typeof profileId === "string" ? profileId.trim() : "";
+      return spawnPlaywrightHeaded(app, id);
+    },
+  );
+
+  ipcMain.handle("stop-playwright-headed-browser", async (event): Promise<{ ok: true } | { ok: false; error: string }> => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    return stopPlaywrightHeaded();
+  });
+
+  ipcMain.handle("get-playwright-headed-status", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { running: false as const };
+    }
+    return getPlaywrightHeadedStatus();
+  });
+
+  ipcMain.handle("force-playwright-shell-profile-sync", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, skipped: true, reason: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      return await runPlaywrightShellSyncNow(app);
+    } catch (e) {
+      /** runPlaywrightShellSyncNow 已对 fetch 做 try，但 listPlaywrightProfiles / readClientState
+       * 在极端 IO / 权限问题下仍可能 throw；保险起见外层兜底以保 IPC 不 reject。 */
+      console.error("[zhizhu-client] force-playwright-shell-profile-sync 异常：", e);
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false as const, skipped: false, status: 0, message: `客户端内部异常：${msg}` };
+    }
+  });
+
+  ipcMain.handle("get-playwright-shell-profile-sync-status", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return {
+        lastOkAt: null,
+        lastErrorAt: null,
+        lastErrorStatus: null,
+        lastErrorMessage: null,
+        lastSentProfileCount: null,
+        lastSentDefaultProfileId: null,
+      };
+    }
+    try {
+      return getPlaywrightShellSyncStatus(app);
+    } catch (e) {
+      console.error("[zhizhu-client] get-playwright-shell-profile-sync-status 异常：", e);
+      return {
+        lastOkAt: null,
+        lastErrorAt: null,
+        lastErrorStatus: null,
+        lastErrorMessage: null,
+        lastSentProfileCount: null,
+        lastSentDefaultProfileId: null,
+      };
+    }
+  });
+
+  /** 自动化规则：本地列表（published 缓存 + 本设备草稿） */
+  ipcMain.handle("list-automation-rules", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      return { ok: true as const, ...automationRulesListLocal(app) };
+    } catch (e) {
+      console.error("[zhizhu-client] list-automation-rules 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("save-automation-rule-draft", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const ruleId = typeof obj.ruleId === "string" ? obj.ruleId : "";
+      const name = typeof obj.name === "string" ? obj.name : undefined;
+      const body =
+        obj.body && typeof obj.body === "object" ? (obj.body as Parameters<typeof automationRulesSaveDraft>[2]["body"]) : undefined;
+      const r = automationRulesSaveDraft(app, ruleId, { name, body });
+      if (!r.ok) {
+        return r;
+      }
+      enqueueAutomationRuleSync(app);
+      return r;
+    } catch (e) {
+      console.error("[zhizhu-client] save-automation-rule-draft 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("delete-automation-rule-draft", async (event, ruleId: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const id = typeof ruleId === "string" ? ruleId : "";
+      const r = automationRulesDeleteDraft(app, id);
+      enqueueAutomationRuleSync(app);
+      return r;
+    } catch (e) {
+      console.error("[zhizhu-client] delete-automation-rule-draft 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("fork-automation-rule-from-published", async (event, ruleId: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const id = typeof ruleId === "string" ? ruleId : "";
+      return automationRulesForkFromPublished(app, id);
+    } catch (e) {
+      console.error("[zhizhu-client] fork-automation-rule-from-published 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("acknowledge-automation-rule-conflict", async (event, ruleId: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const id = typeof ruleId === "string" ? ruleId : "";
+      acknowledgeDraftConflict(app, id);
+      return { ok: true as const };
+    } catch (e) {
+      console.error("[zhizhu-client] acknowledge-automation-rule-conflict 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("force-automation-rule-sync", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, skipped: true, reason: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      return await runAutomationRuleSyncNow(app);
+    } catch (e) {
+      console.error("[zhizhu-client] force-automation-rule-sync 异常：", e);
+      return {
+        ok: false as const,
+        skipped: false,
+        status: 0,
+        message: `客户端内部异常：${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+  });
+
+  ipcMain.handle("get-automation-rule-sync-status", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return {
+        lastPullOkAt: null,
+        lastPushOkAt: null,
+        lastErrorAt: null,
+        lastErrorStatus: null,
+        lastErrorMessage: null,
+        conflictCount: 0,
+        lastPullCount: null,
+        lastPushCount: null,
+      };
+    }
+    try {
+      return getAutomationRuleSyncStatus(app);
+    } catch (e) {
+      console.error("[zhizhu-client] get-automation-rule-sync-status 异常：", e);
+      return {
+        lastPullOkAt: null,
+        lastPushOkAt: null,
+        lastErrorAt: null,
+        lastErrorStatus: null,
+        lastErrorMessage: null,
+        conflictCount: 0,
+        lastPullCount: null,
+        lastPushCount: null,
+      };
+    }
+  });
+
+  ipcMain.handle("trial-run-automation-rule", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const mirrorRuleRunLine = (runnerStdoutLine: string): void => {
+      try {
+        const ts = new Date().toISOString();
+        broadcastClientLogLineToTrustedShells(`[${ts}] [main] [rule-run] ${runnerStdoutLine}`);
+      } catch {
+        /* noop */
+      }
+    };
+    const mirrorFinish = (payload: Record<string, unknown>): void => {
+      try {
+        const ts = new Date().toISOString();
+        broadcastClientLogLineToTrustedShells(`[${ts}] [main] [rule-run] ${JSON.stringify(payload)}`);
+      } catch {
+        /* noop */
+      }
+    };
+    const trialStarted = new Date().toISOString();
+    try {
+      const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const ruleId = typeof obj.ruleId === "string" ? obj.ruleId : "";
+      const source =
+        obj.source === "published" ? "published" : obj.source === "filesystem" ? "filesystem" : "draft";
+      const ruleDir = typeof obj.ruleDir === "string" ? obj.ruleDir : undefined;
+      const profileId = typeof obj.profileId === "string" ? obj.profileId : "";
+      const params =
+        obj.params && typeof obj.params === "object" ? (obj.params as Record<string, unknown>) : {};
+      /** 默认有头：巨量登录/日期筛选需见窗；显式 `headed: false` 才 headless */
+      const headed = obj.headed !== false;
+      const captureTrace = obj.captureTrace === true;
+      const trialRuleTitle = ((): string => {
+        const id = ruleId.trim();
+        if (!id || source === "filesystem") {
+          return "";
+        }
+        const { published, drafts } = automationRulesListLocal(app);
+        const pn = published.find((p) => p.rule_id === id)?.name?.trim() ?? "";
+        if (pn.length > 0) {
+          return pn;
+        }
+        return drafts.find((d) => d.rule_id === id)?.name?.trim() ?? "";
+      })();
+      let result: Awaited<ReturnType<typeof trialRunAutomationRule>>;
+      try {
+        result = await trialRunAutomationRule(
+          app,
+          { ruleId, source, ruleDir, profileId, params, headed, captureTrace },
+          mirrorRuleRunLine,
+        );
+      } catch (trialErr) {
+        /** 仅试跑 await 抛错时收尾；勿与 mirror/ledger 失败混用，以免误判成功试跑为失败 */
+        clearTrialRunPrepareCancel();
+        cancelRegisteredTaskRuleChildren("trial");
+        console.error("[zhizhu-client] trial-run-automation-rule 试跑未捕获异常：", trialErr);
+        const msg = trialErr instanceof Error ? trialErr.message : String(trialErr);
+        mirrorFinish({ event: "finish", ok: false, error: msg, where: "trial_throw" });
+        appendTaskCenterRun(app, {
+          kind: "trial",
+          rule_id: ruleId.trim() || "—",
+          ...(trialRuleTitle.length > 0 ? { rule_display_name: trialRuleTitle } : {}),
+          started_at: trialStarted,
+          finished_at: new Date().toISOString(),
+          ok: false,
+          error_code: "INTERNAL_ERROR",
+          summary: { error: msg.slice(0, 500) },
+          source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
+        });
+        return { ok: false as const, error: msg };
+      }
+      if (result.ok) {
+        mirrorFinish({
+          event: "finish",
+          ok: true,
+          runId: result.runId,
+          ingest: result.summary.ingest,
+        });
+        appendTaskCenterRun(app, {
+          kind: "trial",
+          rule_id: ruleId.trim() || "—",
+          ...(trialRuleTitle.length > 0 ? { rule_display_name: trialRuleTitle } : {}),
+          started_at: trialStarted,
+          finished_at: new Date().toISOString(),
+          ok: true,
+          error_code: null,
+          summary: {
+            run_id: result.runId,
+            ingest_written: result.summary.ingest?.written ?? null,
+            ingest_target: result.summary.ingest?.target ?? null,
+          },
+          source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
+        });
+      } else {
+        mirrorFinish({ event: "finish", ok: false, error: result.error });
+        appendTaskCenterRun(app, {
+          kind: "trial",
+          rule_id: ruleId.trim() || "—",
+          ...(trialRuleTitle.length > 0 ? { rule_display_name: trialRuleTitle } : {}),
+          started_at: trialStarted,
+          finished_at: new Date().toISOString(),
+          ok: false,
+          error_code: "TRIAL_FAILED",
+          summary: { error: result.error.slice(0, 500) },
+          source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
+        });
+      }
+      return result;
+    } catch (e) {
+      console.error("[zhizhu-client] trial-run-automation-rule 异常：", e);
+      const msg = e instanceof Error ? e.message : String(e);
+      mirrorFinish({ event: "finish", ok: false, error: msg, where: "ipc_throw" });
+      const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const ruleId = typeof obj.ruleId === "string" ? obj.ruleId : "";
+      const profileId = typeof obj.profileId === "string" ? obj.profileId : "";
+      const source =
+        obj.source === "published" ? "published" : obj.source === "filesystem" ? "filesystem" : "draft";
+      const headed = obj.headed !== false;
+      const captureTrace = obj.captureTrace === true;
+      const outerTrialTitle = ((): string => {
+        const id = ruleId.trim();
+        if (!id || source === "filesystem") {
+          return "";
+        }
+        const { published, drafts } = automationRulesListLocal(app);
+        const pn = published.find((p) => p.rule_id === id)?.name?.trim() ?? "";
+        if (pn.length > 0) {
+          return pn;
+        }
+        return drafts.find((d) => d.rule_id === id)?.name?.trim() ?? "";
+      })();
+      appendTaskCenterRun(app, {
+        kind: "trial",
+        rule_id: ruleId.trim() || "—",
+        ...(outerTrialTitle.length > 0 ? { rule_display_name: outerTrialTitle } : {}),
+        started_at: trialStarted,
+        finished_at: new Date().toISOString(),
+        ok: false,
+        error_code: "INTERNAL_ERROR",
+        summary: { error: msg.slice(0, 500) },
+        source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
+      });
+      return { ok: false as const, error: msg };
+    }
+  });
+
+  ipcMain.handle("cancel-task-rule-run", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    const t = obj.target;
+    let scope: CancelTaskRuleChildrenScope = "all";
+    if (t === "trial") {
+      scope = "trial";
+    } else if (t === "runner" || t === "loop") {
+      scope = "loop";
+    }
+    const { killed, killedLoop } = cancelRegisteredTaskRuleChildren(scope);
+    if (scope === "trial" || scope === "all") {
+      signalTrialRunPrepareCancel();
+    }
+    const st = getRunnerLoopStatus(app);
+    const taskIdRaw = typeof obj.taskId === "string" ? obj.taskId.trim() : "";
+    const curRaw = typeof st.currentTaskId === "string" ? st.currentTaskId.trim() : "";
+    const taskIdMatchesRunner =
+      taskIdRaw.length > 0 && curRaw.length > 0 && taskIdRaw.toLowerCase() === curRaw.toLowerCase();
+    /**
+     * - `scope=loop`：杀到 loop 子进程、或 taskId 与 currentTaskId 一致（认领后尚未 spawn）时置位
+     * - `scope=all`：仅当确实向 loop 发过 kill（killedLoop>0）或 taskId 匹配；避免「只停试跑」却因 killed 含 trial 而误伤队列
+     */
+    const shouldSignalLoop =
+      scope === "loop"
+        ? killedLoop > 0 || taskIdMatchesRunner
+        : scope === "all"
+          ? killedLoop > 0 || taskIdMatchesRunner
+          : false;
+    if (shouldSignalLoop) {
+      signalRunnerLoopTaskCancel();
+    }
+    /**
+     * 队列停止：若既未杀到 loop 子进程、也未因 taskId 匹配而置位中止，则本机实际上没有执行任何停止动作（避免 UI 误报「已请求停止」）。
+     * 试跑侧 `scope=trial` 仍会 `signalTrialRunPrepareCancel()`，不因 killed=0 判失败。
+     */
+    if (scope === "loop" && killed === 0 && !shouldSignalLoop) {
+      return {
+        ok: false as const,
+        error:
+          "未对本机 Runner 产生任何停止效果：任务 id 与当前认领不一致，或没有可终止的队列 task-rule 子进程。请确认该任务仍为「执行中」后重试。",
+      };
+    }
+    return { ok: true as const, killed };
+  });
+
+  ipcMain.handle("open-automation-rule-trace", async (event, runId: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const id = typeof runId === "string" ? runId : "";
+      return openTraceViewer(app, id);
+    } catch (e) {
+      console.error("[zhizhu-client] open-automation-rule-trace 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("open-automation-rule-codegen", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const profileId = typeof obj.profileId === "string" ? obj.profileId : "";
+      return await openCodegen(app, { profileId }, (line) => {
+        try {
+          broadcastClientLogLineToTrustedShells(`[codegen] ${line}`);
+        } catch {
+          /* noop */
+        }
+      });
+    } catch (e) {
+      console.error("[zhizhu-client] open-automation-rule-codegen 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("stop-automation-rule-codegen", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      return stopCodegen();
+    } catch (e) {
+      console.error("[zhizhu-client] stop-automation-rule-codegen 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("get-automation-rule-codegen-status", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { running: false as const };
+    }
+    return { running: isCodegenRunning() };
+  });
+
+  ipcMain.handle("get-runner-loop-status", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return {
+        lastTaskId: null,
+        lastFinishedAt: null,
+        lastOk: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        lastPolledAt: null,
+        lastPollErrorStatus: null,
+        lastPollErrorMessage: null,
+        currentTaskId: null,
+      };
+    }
+    try {
+      return getRunnerLoopStatus(app);
+    } catch (e) {
+      console.error("[zhizhu-client] get-runner-loop-status 异常：", e);
+      return {
+        lastTaskId: null,
+        lastFinishedAt: null,
+        lastOk: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        lastPolledAt: null,
+        lastPollErrorStatus: null,
+        lastPollErrorMessage: null,
+        currentTaskId: null,
+      };
+    }
+  });
+
+  ipcMain.handle("list-runner-leads-enterprises-visible", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const ctx = readRunnerApiContext();
+    if (!ctx) {
+      return { ok: false as const, error: "未绑定设备或未配置 API；无法加载主体列表。" };
+    }
+    const r = await runnerGetJson<{ enterprises?: RunnerVisibleLeadsEnterpriseDto[] }>(
+      ctx,
+      "/runner/leads-enterprises-visible",
+    );
+    if (!r.ok) {
+      return { ok: false as const, error: r.error };
+    }
+    return { ok: true as const, enterprises: Array.isArray(r.data.enterprises) ? r.data.enterprises : [] };
+  });
+
+  ipcMain.handle("list-runner-ops-accounts", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const ctx = readRunnerApiContext();
+    if (!ctx) {
+      return { ok: false as const, error: "未绑定设备或未配置 API；无法加载账号列表。" };
+    }
+    const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    const dyLeadsEnterpriseId = typeof obj.dyLeadsEnterpriseId === "string" ? obj.dyLeadsEnterpriseId.trim() : "";
+    if (!dyLeadsEnterpriseId) {
+      return { ok: true as const, items: [] as RunnerOpsAccountDto[] };
+    }
+    /** 与 runnerLoop / enrichBizVideo 一致：含 paused，便于试跑与 merge 对齐已派发任务的账号行 */
+    const suffix = `/runner/accounts?dy_leads_enterprise_id=${encodeURIComponent(dyLeadsEnterpriseId)}&active_ops_only=0`;
+    const r = await runnerGetJson<RunnerOpsAccountDto[]>(ctx, suffix);
+    if (!r.ok) {
+      return { ok: false as const, error: r.error };
+    }
+    return { ok: true as const, items: Array.isArray(r.data) ? r.data : [] };
+  });
+
+  ipcMain.handle("force-runner-loop-pump", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const processed = await runRunnerLoopOnce(app, (line) => {
+        try {
+          broadcastClientLogLineToTrustedShells(line);
+        } catch {
+          /* noop */
+        }
+      });
+      return { ok: true as const, processed };
+    } catch (e) {
+      console.error("[zhizhu-client] force-runner-loop-pump 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("resolve-runner-automation-rule-key", async (event, key: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const ctx = readRunnerApiContext();
+    if (!ctx) {
+      return { ok: false as const, error: "未绑定设备或未配置 API。" };
+    }
+    const k = typeof key === "string" ? key.trim() : "";
+    if (!k) {
+      return { ok: false as const, error: "rule 标识无效" };
+    }
+    const r = await runnerGetJson<Record<string, unknown>>(
+      ctx,
+      `/runner/automation-rules/${encodeURIComponent(k)}`,
+    );
+    if (!r.ok) {
+      return { ok: false as const, error: r.error };
+    }
+    const slug = typeof r.data.rule_id === "string" ? r.data.rule_id.trim() : "";
+    if (!slug) {
+      return { ok: false as const, error: "服务端响应缺少 rule_id" };
+    }
+    return { ok: true as const, rule_id: slug };
+  });
+
+  ipcMain.handle("list-runner-tasks", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const ctx = readRunnerApiContext();
+    if (!ctx) {
+      return { ok: false as const, error: "未绑定设备或未配置 API。" };
+    }
+    const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    const page = Math.max(1, Number(obj.page) || 1);
+    const rawSize = Number(obj.pageSize) || 20;
+    const pageSize = Math.min(100, Math.max(1, rawSize));
+    const statusRaw = typeof obj.status === "string" ? obj.status.trim() : "";
+    const q = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (statusRaw.length > 0) {
+      q.set("status", statusRaw);
+    }
+    const r = await runnerGetJson<RunnerTaskListDto>(ctx, `/runner/tasks?${q.toString()}`);
+    if (!r.ok) {
+      return { ok: false as const, error: r.error };
+    }
+    const d = r.data as Record<string, unknown>;
+    const asNonNegInt = (x: unknown, fb: number): number => {
+      const n = typeof x === "number" && Number.isFinite(x) ? x : Number(x);
+      const v = Math.trunc(Number.isFinite(n) ? n : fb);
+      return v >= 0 ? v : fb;
+    };
+    return {
+      ok: true as const,
+      items: Array.isArray(d.items) ? d.items : [],
+      total: asNonNegInt(d.total ?? d.total_count, 0),
+      page: asNonNegInt(d.page ?? d.page_no, page) || 1,
+      pageSize: asNonNegInt(d.pageSize ?? d.page_size, pageSize) || 1,
+    };
+  });
+
+  ipcMain.handle("patch-runner-task", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const ctx = readRunnerApiContext();
+    if (!ctx) {
+      return { ok: false as const, error: "未绑定设备或未配置 API。" };
+    }
+    const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    const taskId = typeof obj.taskId === "string" ? obj.taskId.trim() : "";
+    const status = typeof obj.status === "string" ? obj.status.trim() : "";
+    if (!taskId || status !== "cancelled") {
+      return { ok: false as const, error: "仅支持 taskId + status=cancelled（排队或执行中取消）。" };
+    }
+    const r = await runnerPatchJson(ctx, `/runner/tasks/${encodeURIComponent(taskId)}`, { status: "cancelled" });
+    if (!r.ok) {
+      return { ok: false as const, error: r.error, status: r.status };
+    }
+    clearTaskLocalOverride(app, taskId);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle("list-task-center-runs", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const limit = Math.min(500, Math.max(1, Number(obj.limit) || 200));
+      return { ok: true as const, runs: listTaskCenterRuns(app, limit) };
+    } catch (e) {
+      console.error("[zhizhu-client] list-task-center-runs 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("get-task-local-override", async (event, taskId: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const id = typeof taskId === "string" ? taskId.trim() : "";
+    if (!id) {
+      return { ok: false as const, error: "task_id 无效" };
+    }
+    const o = getTaskLocalOverride(app, id);
+    return { ok: true as const, override: o };
+  });
+
+  ipcMain.handle("set-task-local-override", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    const taskId = typeof obj.taskId === "string" ? obj.taskId.trim() : "";
+    const params = obj.params !== undefined && typeof obj.params === "object" && !Array.isArray(obj.params)
+      ? (obj.params as Record<string, unknown>)
+      : undefined;
+    const browser_profile_slug = typeof obj.browser_profile_slug === "string" ? obj.browser_profile_slug : undefined;
+    const client_profile_id = typeof obj.client_profile_id === "string" ? obj.client_profile_id : undefined;
+    return setTaskLocalOverride(app, taskId, { params, browser_profile_slug, client_profile_id });
+  });
+
+  ipcMain.handle("clear-task-local-override", async (event, taskId: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const id = typeof taskId === "string" ? taskId.trim() : "";
+    if (!id) {
+      return { ok: false as const, error: "task_id 无效" };
+    }
+    clearTaskLocalOverride(app, id);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle("list-task-local-overrides", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    return { ok: true as const, overrides: listTaskLocalOverrides(app) };
+  });
+
+  ipcMain.handle("runner-smoke-test", async (event): Promise<RunnerSmokeTestResultDto> => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return {
+        ok: false,
+        exitCode: -1,
+        stdout: "",
+        stderr: "拒绝处理：来源页面不受信任。",
+      };
+    }
+    return runnerSmokeUiFlow();
   });
 
   ipcMain.handle("set-tenant-id", async (event, tenantId: unknown) => {
@@ -796,7 +1936,7 @@ void (function registerPrimaryInstanceAppHooks(): void {
         return { ok: true as const };
       }
       try {
-        writeClientState(app, { tenantId: t, deviceId: disk.deviceId });
+        writeClientState(app, { tenantId: t });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return { ok: false as const, error: `无法保存配置：${msg}` };
@@ -839,9 +1979,12 @@ void (function registerPrimaryInstanceAppHooks(): void {
       if (!isValidTenantSlug(out.tenantId)) {
         return { ok: false, error: "服务端返回的租户 ID 非法。" };
       }
-      const disk = readClientState(app);
       try {
-        writeClientState(app, { tenantId: out.tenantId, deviceId: out.deviceId });
+        writeClientState(app, {
+          tenantId: out.tenantId,
+          deviceId: out.deviceId,
+          deviceAccessToken: out.deviceAccessToken,
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return {
@@ -850,6 +1993,16 @@ void (function registerPrimaryInstanceAppHooks(): void {
         };
       }
       mainState.tenantId = out.tenantId;
+      void postDeviceRestHeartbeat({
+        tenantId: out.tenantId,
+        deviceId: out.deviceId,
+        deviceAccessToken: out.deviceAccessToken,
+      }).then((hb) => {
+        if (!hb.ok) {
+          console.warn("[zhizhu-client] 首轮 REST 设备心跳失败（控制台短期可能离线），可后续配 ZHIZHU_WSS_URL：", hb.error);
+        }
+      });
+      enqueuePlaywrightShellProfileSync(app);
       setImmediate(() => {
         try {
           rebuildMenu();
@@ -858,7 +2011,7 @@ void (function registerPrimaryInstanceAppHooks(): void {
           console.error("[zhizhu-client] bind-device 后菜单/WSS 更新失败", e);
         }
       });
-      return { ok: true, tenantId: out.tenantId, deviceId: out.deviceId };
+      return { ok: true as const, tenantId: out.tenantId, deviceId: out.deviceId };
     } finally {
       bindDeviceInFlight = false;
     }
@@ -918,6 +2071,19 @@ void (function registerPrimaryInstanceAppHooks(): void {
       initTray();
       rebuildTrayMenu();
       syncWssFromDisk();
+      /** 启动即触发一次同步并开启周期重试，让 API 临时故障/版本错位修复后无需用户操作即可恢复一致 */
+      enqueuePlaywrightShellProfileSync(app);
+      startPlaywrightShellSyncPeriodicLoop(app);
+      enqueueAutomationRuleSync(app);
+      startAutomationRuleSyncPeriodicLoop(app);
+      startRunnerLoop(app, (line) => {
+        try {
+          broadcastClientLogLineToTrustedShells(line);
+        } catch {
+          /* noop */
+        }
+      });
+      void runStartupRunnerEnvironmentDialog(getLiveWindows()[0] ?? null, logRunnerSetupToShells);
     } finally {
       primaryBootstrapFinished = true;
     }

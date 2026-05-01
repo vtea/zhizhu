@@ -1,0 +1,24 @@
+{
+  "rule_id": "high-dive-lead-daily-sync",
+  "name": "高潜线索日汇总同步",
+  "version": "0.1.0",
+  "target": "biz_lead",
+  "owner": "growth-ops",
+  "console_base": "https://leads.cluerich.com",
+  "start_path": "/pc/user-manage/high-dive-user/list",
+  "params_schema": {
+    "type": "object",
+    "properties": {
+      "start_date": {
+        "type": "string",
+        "description": "日期起点，格式建议 YYYY-MM-DD"
+      },
+      "end_date": {
+        "type": "string",
+        "description": "日期终点，格式建议 YYYY-MM-DD"
+      }
+    },
+    "required": ["start_date", "end_date"],
+    "additionalProperties": true
+  }
+}

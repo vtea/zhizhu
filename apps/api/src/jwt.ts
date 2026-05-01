@@ -5,7 +5,26 @@ const HMAC = "sha256";
 
 /** 保留租户：仅存放 `platform_admin` 控制台账号，不承载业务数据（小写字母，避免下划线等易混淆字符） */
 export const RESERVED_PLATFORM_TENANT_ID = "zhizhuplatform";
+/** 历史上控制台曾用该 tenant_id；迁移后统一为 `RESERVED_PLATFORM_TENANT_ID` */
+export const LEGACY_PLATFORM_TENANT_ID = "__platform__";
 export const PLATFORM_ADMIN_ROLE = "platform_admin";
+
+/** 是否平台保留租户（JWT `tid`）；与 `consoleAuth` / 迁移逻辑一致 */
+export function isPlatformTenantSlug(raw: string): boolean {
+  const t = raw.trim().toLowerCase();
+  return t === RESERVED_PLATFORM_TENANT_ID || t === LEGACY_PLATFORM_TENANT_ID.toLowerCase();
+}
+
+/**
+ * 全站「平台管理员」会话：须同时满足保留租户 slug + platform_admin，
+ * （供 `/api/v1/admin/...`、`authorizeTenantRequest`、WSS 心跳共享同一判定）。
+ */
+export function isPlatformAdminSession(payload: JwtPayload): boolean {
+  if (!payload || !Array.isArray(payload.roles)) {
+    return false;
+  }
+  return payload.roles.includes(PLATFORM_ADMIN_ROLE) && isPlatformTenantSlug(payload.tid);
+}
 
 export type JwtPayload = { tid: string; sub: string; roles: string[]; exp: number; iat: number };
 
@@ -79,9 +98,8 @@ export function authorizeTenantRequest(
   if (!url) {
     return { ok: false, status: 400, message: "tenant_id 无效" };
   }
-  const crossTenant = payload.roles.includes(PLATFORM_ADMIN_ROLE);
   const jwtTid = payload.tid.trim().toLowerCase();
-  if (jwtTid !== url && !crossTenant) {
+  if (jwtTid !== url && !isPlatformAdminSession(payload)) {
     return { ok: false, status: 403, message: "JWT 中的租户与当前请求路径上的 tenant 不一致" };
   }
   return { ok: true, payload };

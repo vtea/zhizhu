@@ -36,7 +36,8 @@ export function TenantConsoleShell() {
     const onTenantManagement =
       p === `${pathBase}tenant-management` || p.startsWith(`${pathBase}tenant-management/`);
     const onSystemSettings = p === `${pathBase}system-settings` || p.startsWith(`${pathBase}system-settings/`);
-    if (!onTenantManagement && !onSystemSettings) {
+    const onTaskCenter = p === `${pathBase}task-center`;
+    if (!onTenantManagement && !onSystemSettings && !onTaskCenter) {
       return (
         <Navigate
           to={`/t/${encodeURIComponent(PLATFORM_ADMIN_TENANT_ID)}/tenant-management`}

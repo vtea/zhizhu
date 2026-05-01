@@ -21,7 +21,7 @@ function normalizeTenantConsolePathname(pathname: string): string | null {
 }
 
 /**
- * 将首个租户段小写化（`encodeURIComponent` 后写回 URL），与路由 param、`isValidTenantSlug` 一致，避免对 `/t/Demo/...` 再被侧栏壳重定向一次。
+ * 将首个租户段小写化（`encodeURIComponent` 后写回 URL），与路由 param、`isValidTenantSlug` 一致，避免对 `/t/Demo/...` 再被侧边栏导航重定向一次。
  */
 function normalizeTenantSlugCaseInPath(pathname: string): string {
   const m = /^(\/t\/)([^/]+)(.*)$/.exec(pathname);

@@ -1,30 +1,69 @@
 import { getApiBaseUrl } from "@/api/env";
 import { apiDeleteJson, apiGetJson, apiPatchJson, apiPostJson } from "@/api/http";
+import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
 import { sleepMock } from "@/mocks/delay";
-import { mockAccounts, type MockAccount } from "@/mocks/seed";
+import { accountEligibleForOpsBinding, mockAccounts, type MockAccount } from "@/mocks/seed";
 
 export type ListAccountsQuery = {
   tenantId: string;
   accountKind: "enterprise_staff" | "personal_authorized";
+  dyLeadsEnterpriseId?: string | null;
 };
 
 export async function listAccounts(q: ListAccountsQuery): Promise<MockAccount[]> {
   const base = getApiBaseUrl();
   if (base) {
     const qs = new URLSearchParams({ account_kind: q.accountKind });
+    if (q.dyLeadsEnterpriseId?.trim()) {
+      qs.set("dy_leads_enterprise_id", q.dyLeadsEnterpriseId.trim());
+    }
     return apiGetJson<MockAccount[]>(`/api/v1/tenants/${encodeURIComponent(q.tenantId)}/accounts?${qs}`);
   }
   await sleepMock();
-  return mockAccounts.filter((a) => a.tenant_id === q.tenantId && a.account_kind === q.accountKind);
+  return mockAccounts.filter((a) => {
+    if (a.tenant_id !== q.tenantId || a.account_kind !== q.accountKind) {
+      return false;
+    }
+    if (q.dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(a.dy_leads_enterprise_id, q.dyLeadsEnterpriseId)) {
+      return false;
+    }
+    return true;
+  });
 }
 
-export async function listAllAccounts(tenantId: string): Promise<MockAccount[]> {
+export type ListAllAccountsOpts = {
+  /** 与 GET `active_ops_only=1`：排除暂停、已撤销 */
+  activeOpsOnly?: boolean;
+};
+
+export async function listAllAccounts(
+  tenantId: string,
+  dyLeadsEnterpriseId?: string | null,
+  opts?: ListAllAccountsOpts,
+): Promise<MockAccount[]> {
   const base = getApiBaseUrl();
   if (base) {
-    return apiGetJson<MockAccount[]>(`/api/v1/tenants/${encodeURIComponent(tenantId)}/accounts`);
+    const qs = new URLSearchParams();
+    if (dyLeadsEnterpriseId?.trim()) {
+      qs.set("dy_leads_enterprise_id", dyLeadsEnterpriseId.trim());
+    }
+    if (opts?.activeOpsOnly) {
+      qs.set("active_ops_only", "1");
+    }
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return apiGetJson<MockAccount[]>(`/api/v1/tenants/${encodeURIComponent(tenantId)}/accounts${suffix}`);
   }
   await sleepMock();
-  return mockAccounts.filter((a) => a.tenant_id === tenantId);
+  const rows = mockAccounts.filter((a) => {
+    if (a.tenant_id !== tenantId) {
+      return false;
+    }
+    if (dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(a.dy_leads_enterprise_id, dyLeadsEnterpriseId)) {
+      return false;
+    }
+    return true;
+  });
+  return opts?.activeOpsOnly ? rows.filter(accountEligibleForOpsBinding) : rows;
 }
 
 export type CreateBizAccountBody = {
@@ -33,9 +72,10 @@ export type CreateBizAccountBody = {
   account_kind: "enterprise_staff" | "personal_authorized";
   dy_leads_enterprise_id?: string;
   dy_leads_enterprise_name?: string | null;
-  ops_status?: "running" | "paused";
+  ops_status?: "running" | "paused" | "revoked";
   dy_display_name?: string | null;
   dy_unique_id?: string | null;
+  dy_user_url?: string | null;
   remark?: string | null;
 };
 
@@ -48,9 +88,10 @@ export async function updateBizAccount(
   platform: string,
   accountId: string,
   patch: {
-    ops_status?: "running" | "paused";
+    ops_status?: "running" | "paused" | "revoked";
     dy_display_name?: string | null;
     dy_unique_id?: string | null;
+    dy_user_url?: string | null;
     dy_leads_enterprise_id?: string;
     dy_leads_enterprise_name?: string | null;
     remark?: string | null;

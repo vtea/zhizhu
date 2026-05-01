@@ -8,18 +8,20 @@ DELETE FROM biz_device_bind_code WHERE tenant_id = 'demo';
 DELETE FROM biz_rule_dispatch_log WHERE tenant_id = 'demo';
 DELETE FROM biz_automation_rule WHERE tenant_id = 'demo';
 
+-- body 一律带 schema_version：客户端 `validateRuleBody` 旧路径会就地补 1，但源头合规可避免任意入口（API 上传/试跑/promote）误判。
+-- draft body 至少要有 steps[]（schema 允许空数组），否则 promote/试跑会触发 "schema_version 须为整数" 类红条。
 INSERT INTO biz_automation_rule (id, tenant_id, rule_id, name, status, version, body, published_at, published_by)
 VALUES
   (
     'e1000001-0000-4000-8000-000000000001'::uuid,
     'demo', 'rule-high-potential', '高潜用户列表（官方模板）', 'published', '2026.04.1',
-    '{"steps":[{"type":"goto","path":"/pc/user-manage/high-dive-user/list"}]}'::jsonb,
+    '{"schema_version":1,"title":"高潜用户列表（官方模板）","steps":[{"type":"goto","path":"/pc/user-manage/high-dive-user/list"}]}'::jsonb,
     '2026-04-20T11:00:00+00', 'system'
   ),
   (
     'e1000001-0000-4000-8000-000000000002'::uuid,
     'demo', 'rule-analytics', '数据分析概览同步', 'draft', '2026.04.0',
-    '{}'::jsonb,
+    '{"schema_version":1,"title":"数据分析概览同步","steps":[]}'::jsonb,
     NULL, NULL
   );
 

@@ -1,0 +1,22 @@
+{
+  "name": "@zhizhu/playwright-browser-fingerprint",
+  "private": true,
+  "version": "0.1.0",
+  "description": "知竹：Playwright 类真实设备指纹（Electron headed-login / 采集 Runner 同源复用）",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test src/launchEntrypoints.contract.test.ts",
+    "postinstall": "node -e \"const cp=require('node:child_process');const hasTsc=(()=>{try{return !!require.resolve('typescript/bin/tsc')}catch{return false}})();if(!hasTsc){console.log('[playwright-browser-fingerprint] skip build: typescript not installed');process.exit(0);}cp.execSync('npm run build',{stdio:'inherit'});\""
+  },
+  "peerDependencies": {
+    "playwright": "^1.59.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "playwright": "^1.59.1",
+    "tsx": "^4.19.2",
+    "typescript": "~5.8.0"
+  }
+}

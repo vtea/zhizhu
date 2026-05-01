@@ -2,6 +2,7 @@ import { DataTable, type DataColumn } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { PaginationBar } from "@/components/PaginationBar";
 import { PlaceholderCard } from "@/components/PlaceholderCard";
+import { Banner, Button, Field, OverlaySectionCard, SelectInput, TextInput } from "@/components/ui";
 import {
   createAdPlacement,
   deleteAdPlacement,
@@ -12,12 +13,15 @@ import {
 } from "@/api/adPlacements";
 import { listAllAccounts } from "@/api/accounts";
 import { getApiBaseUrl } from "@/api/env";
+import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
 import { useTenantId } from "@/hooks/useTenantId";
 import { formatDateTime, formatNumber } from "@/lib/format";
+import { accountFilterSelectValue } from "@/lib/accountFilterSelectValue";
 import { lastPage } from "@/lib/pagination";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
+import { accountEligibleForOpsBinding } from "@/mocks/seed";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 const PAGE_SIZE = 10;
@@ -44,6 +48,7 @@ function optFiniteNumber(raw: string, label: string): number | null {
 
 export function AdPlacementsPage() {
   const tenantId = useTenantId();
+  const { selectedDyLeadsEnterpriseId } = useSelectedEnterprise();
   const qc = useQueryClient();
   const [search, setSearch] = useSearchParams();
   const page = parsePage(search.get("page"));
@@ -69,15 +74,33 @@ export function AdPlacementsPage() {
     editingIdRef.current = editingId;
   }, [editingId]);
 
-  const accountsQ = useQuery({
-    queryKey: ["accounts-all", tenantId],
-    queryFn: () => listAllAccounts(tenantId),
+  const accountsAllQ = useQuery({
+    queryKey: ["accounts-all", tenantId, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => listAllAccounts(tenantId, selectedDyLeadsEnterpriseId),
     enabled: Boolean(apiBase),
   });
 
+  const accountPickerRows = useMemo(() => {
+    const all = accountsAllQ.data ?? [];
+    const eligible = all.filter(accountEligibleForOpsBinding);
+    if (!editingId) {
+      return eligible;
+    }
+    const curId = accountId.trim();
+    if (!curId) {
+      return eligible;
+    }
+    const cur = all.find((a) => String(a.account_id) === curId);
+    if (cur && !accountEligibleForOpsBinding(cur)) {
+      return [cur, ...eligible.filter((a) => String(a.account_id) !== String(cur.account_id))];
+    }
+    return eligible;
+  }, [accountsAllQ.data, editingId, accountId]);
+
   const listQuery = useQuery({
-    queryKey: ["ad-placements", tenantId, page, PAGE_SIZE],
-    queryFn: () => listAdPlacements({ tenantId, page, pageSize: PAGE_SIZE }),
+    queryKey: ["ad-placements", tenantId, page, PAGE_SIZE, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () =>
+      listAdPlacements({ tenantId, page, pageSize: PAGE_SIZE, dyLeadsEnterpriseId: selectedDyLeadsEnterpriseId }),
     enabled: Boolean(apiBase),
   });
 
@@ -131,10 +154,15 @@ export function AdPlacementsPage() {
     setPlacementFormOpen(true);
   }
 
+  /** 切换企业主体后丢弃投放表单，避免账号/视频仍属旧主体却提交到新主体上下文 */
+  useEffect(() => {
+    resetForm();
+  }, [selectedDyLeadsEnterpriseId]);
+
   function fillFromRow(r: AdPlacementRow) {
     setPlacementFormOpen(true);
     setEditingId(r.id);
-    setAccountId(r.account_id);
+    setAccountId(String(r.account_id));
     setDyVideoId(r.dy_video_id);
     setAdDate(r.ad_date);
     setSpend(r.spend_amount != null ? String(r.spend_amount) : "");
@@ -209,7 +237,7 @@ export function AdPlacementsPage() {
       return;
     }
     try {
-      const m = await getVideoPlacementMetrics(tenantId, dyVideoId.trim());
+      const m = await getVideoPlacementMetrics(tenantId, dyVideoId.trim(), "douyin", selectedDyLeadsEnterpriseId);
       setPreLike(m.dy_like_count != null ? String(m.dy_like_count) : "");
       setPreComment(m.dy_comment_count != null ? String(m.dy_comment_count) : "");
       setPreFav(m.dy_favorite_count != null ? String(m.dy_favorite_count) : "");
@@ -283,17 +311,13 @@ export function AdPlacementsPage() {
       id: "edit",
       header: "操作",
       cell: (r) => (
-        <div className="flex flex-nowrap items-center gap-2">
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center justify-center rounded-full border border-zz-border bg-white px-2.5 py-1 text-xs font-medium text-zz-near shadow-sm transition hover:border-zz-blue hover:text-zz-blue"
-            onClick={() => fillFromRow(r)}
-          >
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => fillFromRow(r)}>
             载入编辑
-          </button>
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center justify-center rounded-full border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 shadow-sm transition hover:bg-red-50 disabled:opacity-50"
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
             disabled={delMut.isPending && delMut.variables === r.id}
             onClick={() => {
               if (confirm("删除该投放行？")) {
@@ -302,19 +326,18 @@ export function AdPlacementsPage() {
             }}
           >
             删除
-          </button>
+          </Button>
         </div>
       ),
     },
   ];
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="投放管理"
-        description="人工维护投放与投前互动基线。同一「投放账号＋视频」在逻辑上仅一行可标为「当前」；改选「当前」时，服务端会将其余同行标记取消。"
       />
-      <div className="mt-6 space-y-4">
+      <div className="space-y-4">
         {!apiBase ? (
           <PlaceholderCard
             title="当前为离线演示"
@@ -324,153 +347,134 @@ export function AdPlacementsPage() {
             ]}
           />
         ) : listQuery.isError ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-            加载失败：{formatQueryError(listQuery.error)}
-          </div>
+          <Banner kind="error">加载失败：{formatQueryError(listQuery.error)}</Banner>
         ) : (
           <>
-            <div className="mb-4 flex flex-wrap items-center justify-end">
-              <button
-                type="button"
-                className="shrink-0 rounded-full border border-zz-border bg-white px-4 py-2 text-sm font-medium text-zz-near shadow-sm transition hover:border-zz-near hover:bg-zz-snow"
-                onClick={openNewPlacement}
-              >
+            <div className="flex flex-wrap items-center justify-start sm:justify-end">
+              <Button variant="secondary" size="md" onClick={openNewPlacement}>
                 添加投放
-              </button>
+              </Button>
             </div>
-            {(placementFormOpen || Boolean(editingId)) && (
-              <section className="rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-6">
-              <h2 className="text-sm font-semibold text-zz-near">{editingId ? "编辑投放行" : "新建投放"}</h2>
-              <p className="mt-1 text-xs text-zz-muted">
-                每个投放日占一行，同一租户下「投放方账号＋视频 ID＋投放日」需唯一。写入需具备租户管理员或投放管理写权限。
-              </p>
-              {accountsQ.isError ? (
-                <p className="mt-3 text-sm text-red-700">账号列表加载失败：{formatQueryError(accountsQ.error)}</p>
-              ) : null}
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <label className="text-sm text-zz-near sm:col-span-2">
-                  投放账号
-                  <select
-                    className="mt-1 block w-full rounded-lg border border-zz-border bg-white px-3 py-2 text-sm"
-                    value={accountId}
-                    onChange={(ev) => setAccountId(ev.target.value)}
-                    disabled={Boolean(editingId) || accountsQ.isError}
-                  >
-                    <option value="">请选择</option>
-                    {(accountsQ.data ?? []).map((a) => (
-                      <option key={a.account_id} value={a.account_id}>
-                        {a.dy_nickname ?? a.account_id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-sm text-zz-near">
-                  抖音视频 ID
-                  <input
-                    className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 font-mono text-sm"
-                    value={dyVideoId}
-                    onChange={(ev) => setDyVideoId(ev.target.value)}
-                    disabled={Boolean(editingId)}
-                  />
-                </label>
-                <label className="text-sm text-zz-near">
-                  投放日
-                  <input
-                    type="date"
-                    className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                    value={adDate}
-                    onChange={(ev) => setAdDate(ev.target.value)}
-                    disabled={Boolean(editingId)}
-                  />
-                </label>
-                <label className="text-sm text-zz-near">
-                  金额
-                  <input
-                    className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                    value={spend}
-                    onChange={(ev) => setSpend(ev.target.value)}
-                    placeholder="可选"
-                  />
-                </label>
-                <label className="text-sm text-zz-near">
-                  状态文案
-                  <input
-                    className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                    value={placementStatus}
-                    onChange={(ev) => setPlacementStatus(ev.target.value)}
-                    placeholder="可选"
-                  />
-                </label>
-                <div className="sm:col-span-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="rounded-full border border-zz-border bg-zz-snow/50 px-3 py-1.5 text-sm hover:border-zz-blue"
-                    onClick={() => void onFillMetrics()}
-                    disabled={Boolean(editingId)}
-                  >
-                    从视频库快照带入投前
-                  </button>
-                  {metricsHint ? <span className="text-xs text-zz-muted">{metricsHint}</span> : null}
+            <OverlaySectionCard
+              open={placementFormOpen || Boolean(editingId)}
+              onClose={resetForm}
+              title={editingId ? "编辑投放行" : "新建投放"}
+              titleAs="h2"
+              description="每个投放日占一行，同一租户下「投放方账号＋视频 ID＋投放日」需唯一。写入需具备租户管理员或投放管理写权限。"
+            >
+                {accountsAllQ.isError ? (
+                  <Banner kind="error" className="mb-3">
+                    账号列表加载失败：{formatQueryError(accountsAllQ.error)}
+                  </Banner>
+                ) : null}
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field className="sm:col-span-2" label="投放账号">
+                    {({ id, describedBy }) => (
+                      <SelectInput
+                        id={id}
+                        aria-describedby={describedBy}
+                        value={accountFilterSelectValue(
+                          accountId,
+                          accountPickerRows,
+                          accountsAllQ.isPending,
+                          accountsAllQ.isError,
+                        )}
+                        onChange={(ev) => setAccountId(ev.target.value)}
+                        disabled={Boolean(editingId) || accountsAllQ.isError}
+                      >
+                        <option value="">请选择</option>
+                        {accountPickerRows.map((a) => (
+                          <option key={a.account_id} value={a.account_id}>
+                            {a.dy_nickname ?? a.account_id}
+                          </option>
+                        ))}
+                      </SelectInput>
+                    )}
+                  </Field>
+                  <Field label="抖音视频 ID">
+                    {({ id, describedBy }) => (
+                      <TextInput
+                        id={id}
+                        aria-describedby={describedBy}
+                        mono
+                        value={dyVideoId}
+                        onChange={(ev) => setDyVideoId(ev.target.value)}
+                        disabled={Boolean(editingId)}
+                      />
+                    )}
+                  </Field>
+                  <Field label="投放日">
+                    {({ id, describedBy }) => (
+                      <TextInput
+                        id={id}
+                        type="date"
+                        aria-describedby={describedBy}
+                        value={adDate}
+                        onChange={(ev) => setAdDate(ev.target.value)}
+                        disabled={Boolean(editingId)}
+                      />
+                    )}
+                  </Field>
+                  <Field label="金额">
+                    {({ id, describedBy }) => (
+                      <TextInput id={id} aria-describedby={describedBy} value={spend} onChange={(ev) => setSpend(ev.target.value)} placeholder="可选" />
+                    )}
+                  </Field>
+                  <Field label="状态文案">
+                    {({ id, describedBy }) => (
+                      <TextInput id={id} aria-describedby={describedBy} value={placementStatus} onChange={(ev) => setPlacementStatus(ev.target.value)} placeholder="可选" />
+                    )}
+                  </Field>
+                  <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+                    <Button variant="secondary" size="sm" onClick={() => void onFillMetrics()} disabled={Boolean(editingId)}>
+                      从视频库快照带入投前
+                    </Button>
+                    {metricsHint ? <span className="text-xs text-zz-muted">{metricsHint}</span> : null}
+                  </div>
+                  <Field label="投前赞">
+                    {({ id }) => <TextInput id={id} value={preLike} onChange={(ev) => setPreLike(ev.target.value)} />}
+                  </Field>
+                  <Field label="投前评">
+                    {({ id }) => <TextInput id={id} value={preComment} onChange={(ev) => setPreComment(ev.target.value)} />}
+                  </Field>
+                  <Field label="投前藏">
+                    {({ id }) => <TextInput id={id} value={preFav} onChange={(ev) => setPreFav(ev.target.value)} />}
+                  </Field>
+                  <Field label="投前转">
+                    {({ id }) => <TextInput id={id} value={preShare} onChange={(ev) => setPreShare(ev.target.value)} />}
+                  </Field>
+                  <label className="sm:col-span-2 flex items-center gap-2 text-sm text-zz-near">
+                    <input type="checkbox" checked={isCurrent} onChange={(ev) => setIsCurrent(ev.target.checked)} />
+                    标记为当前投放（将自动取消同视频其它行的「当前」）
+                  </label>
                 </div>
-                <label className="text-sm text-zz-near">
-                  投前赞
-                  <input className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 text-sm" value={preLike} onChange={(ev) => setPreLike(ev.target.value)} />
-                </label>
-                <label className="text-sm text-zz-near">
-                  投前评
-                  <input
-                    className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                    value={preComment}
-                    onChange={(ev) => setPreComment(ev.target.value)}
-                  />
-                </label>
-                <label className="text-sm text-zz-near">
-                  投前藏
-                  <input className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 text-sm" value={preFav} onChange={(ev) => setPreFav(ev.target.value)} />
-                </label>
-                <label className="text-sm text-zz-near">
-                  投前转
-                  <input
-                    className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 text-sm"
-                    value={preShare}
-                    onChange={(ev) => setPreShare(ev.target.value)}
-                  />
-                </label>
-                <label className="flex items-center gap-2 text-sm text-zz-near sm:col-span-2">
-                  <input type="checkbox" checked={isCurrent} onChange={(ev) => setIsCurrent(ev.target.checked)} />
-                  标记为当前投放（将自动取消同视频其它行的「当前」）
-                </label>
-              </div>
-              {isCurrent ? (
-                <p className="mt-3 text-xs text-amber-900">提示：勾选后保存时，同账号同视频的其它投放行将自动取消「当前」。</p>
-              ) : null}
-              {formErr ? <p className="mt-3 text-sm text-red-700">{formErr}</p> : null}
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="rounded-full bg-zz-black px-4 py-2 text-sm text-white disabled:opacity-50"
-                  disabled={saveMut.isPending}
-                  onClick={() => {
-                    setFormErr(null);
-                    saveMut.mutate();
-                  }}
-                >
-                  {saveMut.isPending ? "提交中…" : editingId ? "保存修改" : "创建"}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-full border border-zz-border px-4 py-2 text-sm"
-                  onClick={editingId ? resetForm : clearNewFormFields}
-                >
-                  {editingId ? "取消" : "清空"}
-                </button>
-              </div>
-              </section>
-            )}
+                {isCurrent ? (
+                  <p className="mt-3 text-xs text-amber-900">提示：勾选后保存时，同账号同视频的其它投放行将自动取消「当前」。</p>
+                ) : null}
+                {formErr ? (
+                  <div className="mt-3">
+                    <Banner kind="error">{formErr}</Banner>
+                  </div>
+                ) : null}
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button
+                    variant="primary"
+                    size="md"
+                    isLoading={saveMut.isPending}
+                    onClick={() => {
+                      setFormErr(null);
+                      saveMut.mutate();
+                    }}
+                  >
+                    {saveMut.isPending ? "提交中…" : editingId ? "保存修改" : "创建"}
+                  </Button>
+                  <Button variant="secondary" size="md" onClick={editingId ? resetForm : clearNewFormFields}>
+                    {editingId ? "取消" : "清空"}
+                  </Button>
+                </div>
+            </OverlaySectionCard>
 
-            {tableActionErr ? (
-              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{tableActionErr}</div>
-            ) : null}
+            {tableActionErr ? <Banner kind="error">{tableActionErr}</Banner> : null}
             <DataTable
               columns={columns}
               rows={listQuery.data?.items ?? []}

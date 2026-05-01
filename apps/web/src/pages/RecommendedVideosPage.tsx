@@ -1,5 +1,7 @@
 import { PageHeader } from "@/components/PageHeader";
+import { Banner, Pill } from "@/components/ui";
 import { listRecommendedVideos, type RecommendedItem } from "@/api/videos";
+import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
 import { useTenantId } from "@/hooks/useTenantId";
 import { formatDecimal2, formatNumber, formatPercent } from "@/lib/format";
 import { segmentPillClass } from "@/lib/segmentPillClass";
@@ -21,25 +23,22 @@ function likeRate(v: RecommendedItem): number {
 
 export function RecommendedVideosPage() {
   const tenantId = useTenantId();
+  const { selectedDyLeadsEnterpriseId } = useSelectedEnterprise();
   const [params] = useSearchParams();
   const from = params.get("from");
   const accountFilter = params.get("accountId");
   const [sort, setSort] = useState<SortKey>("score");
 
   const query = useQuery({
-    queryKey: ["recommended-videos", tenantId],
-    queryFn: () => listRecommendedVideos(tenantId),
+    queryKey: ["recommended-videos", tenantId, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => listRecommendedVideos(tenantId, selectedDyLeadsEnterpriseId),
   });
-
-  const formulaVersion = useMemo(() => {
-    const first = query.data?.[0];
-    return first?.recommend_formula_version ?? null;
-  }, [query.data]);
 
   const rows = useMemo(() => {
     let base = query.data ?? [];
     if (accountFilter) {
-      base = base.filter((v) => v.account_id === accountFilter);
+      const want = String(accountFilter);
+      base = base.filter((v) => String(v.account_id) === want);
     }
     const copy = [...base];
     if (sort === "plays") {
@@ -62,16 +61,11 @@ export function RecommendedVideosPage() {
   ];
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="推荐视频"
-        description={
-          (formulaVersion
-            ? `与「视频管理」同数据源；本页按推荐分与当前公式版本（${formulaVersion}）排序，与立项书推荐视频章节一致。从其它页带账号或来源参数可联动筛选。`
-            : "与「视频管理」同数据来源；本页为只读推荐排序。各卡片上展示所采用的公式版本。") + " 若需增删改视频，请前往「视频管理」。"
-        }
       />
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2" role="tablist" aria-label="排序">
           {sortTabs.map((t) => {
             const active = sort === t.id;
@@ -106,7 +100,7 @@ export function RecommendedVideosPage() {
         </div>
       </div>
       {from || accountFilter ? (
-        <p className="mb-4 text-xs text-zz-muted">
+        <p className="text-xs text-zz-muted">
           {from ? (
             <>
               来源标记：<span className="font-mono text-zz-near">{from}</span>
@@ -121,11 +115,7 @@ export function RecommendedVideosPage() {
           ) : null}
         </p>
       ) : null}
-      {query.isError ? (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          加载失败：{formatQueryError(query.error)}
-        </div>
-      ) : null}
+      {query.isError ? <Banner kind="error">加载失败：{formatQueryError(query.error)}</Banner> : null}
       {query.isPending ? (
         <div className="text-sm text-zz-muted">加载中…</div>
       ) : query.isError ? null : rows.length === 0 ? (
@@ -137,16 +127,16 @@ export function RecommendedVideosPage() {
           {rows.map((v, idx) => (
             <article
               key={`${v.account_id}:${v.dy_video_id}`}
-              className="rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-4"
+              className="rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-4 shadow-[0_1px_2px_0_rgb(0_0_0_/_0.04)]"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="text-xs font-mono text-zz-muted">#{idx + 1}</div>
+                  <div className="font-mono text-xs text-zz-muted">#{idx + 1}</div>
                   <h3 className="mt-1 line-clamp-2 text-base font-medium text-zz-near">{v.dy_title ?? "未命名视频"}</h3>
                 </div>
-                <div className="shrink-0 rounded-full bg-zz-snow px-2 py-0.5 text-xs font-mono text-zz-near">
+                <Pill tone="info" className="font-mono">
                   {formatDecimal2(v.recommend_score)}
-                </div>
+                </Pill>
               </div>
               <dl className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2 text-xs text-zz-muted">
                 <div>

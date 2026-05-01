@@ -127,6 +127,27 @@ export async function apiPatchJson<T>(path: string, body: unknown): Promise<T> {
   return parseResponseJsonOrEmptyObject<T>(text, "PATCH", path, res.status);
 }
 
+export async function apiPutJson<T>(path: string, body: unknown): Promise<T> {
+  const base = getApiBaseUrl();
+  if (!base) {
+    throw new Error("未配置 VITE_API_BASE_URL 时不应走真实 HTTP，请使用 mock 入口");
+  }
+  const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
+  const requestHadBearer = Boolean(getSession()?.accessToken);
+  const res = await fetch(url, {
+    method: "PUT",
+    credentials: "include",
+    headers: authHeaders(true),
+    body: JSON.stringify(body ?? {}),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    clearSessionOnUnauthorizedIfBearerSent(res.status, requestHadBearer);
+    throw new ApiError(`PUT ${path} 失败`, res.status, text);
+  }
+  return parseResponseJsonOrEmptyObject<T>(text, "PUT", path, res.status);
+}
+
 export async function apiDeleteJson<T>(path: string): Promise<T> {
   const base = getApiBaseUrl();
   if (!base) {

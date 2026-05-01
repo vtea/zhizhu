@@ -1,14 +1,23 @@
-import { chromium, type BrowserContext } from "playwright";
+import type { BrowserContext } from "playwright";
+import { launchFingerprintedPersistentContext } from "@zhizhu/playwright-browser-fingerprint";
 
+/**
+ * Field-probe 工具的持久化启动入口。
+ *
+ * **必须**走 `@zhizhu/playwright-browser-fingerprint`：probe 用真实登录态访问 leads.cluerich.com / 抖音域，
+ * 反爬指纹（webdriver / plugins / languages / WebGL）一旦缺失会拉低账号信任分（影响日常采集）。
+ * 用 `seedOverride: profileSlug` 让指纹与 slug 绑定，多企业 profile 之间互不串号。
+ */
 export async function launchPersistentProfileContext(
   userDataDir: string,
   profileSlug: string,
   options: { headless: boolean },
 ): Promise<BrowserContext> {
   try {
-    return await chromium.launchPersistentContext(userDataDir, {
+    return await launchFingerprintedPersistentContext({
+      userDataDir,
       headless: options.headless,
-      viewport: { width: 1400, height: 900 },
+      seedOverride: `field-probe:${profileSlug}`,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

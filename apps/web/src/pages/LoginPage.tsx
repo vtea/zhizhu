@@ -1,5 +1,8 @@
 import { clearPostRegisterHint, consumePostRegisterHint } from "@/auth/postRegisterHint";
-import { sessionHasPlatformAdminRole } from "@/auth/platformScope";
+import {
+  isPlatformReservedTenantSlug,
+  sessionHasPlatformAdminRole,
+} from "@/auth/platformScope";
 import { setSession } from "@/auth/session";
 import { getApiBaseUrl } from "@/api/env";
 import { useSession } from "@/hooks/useSession";
@@ -16,6 +19,9 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 const DEMO_TENANT = "demo";
+
+/** 须与 API 的 CONSOLE_ALLOW_PUBLIC_REGISTER 一致；未开启时不展示注册入口 */
+const PUBLIC_REGISTER = import.meta.env.VITE_CONSOLE_PUBLIC_REGISTER === "true";
 
 /** 与 `npm run migrate:api` 种子及 README 一致 */
 const SEED_LOGIN_HINT =
@@ -127,7 +133,9 @@ export function LoginPage() {
       const displayName =
         typeof tok.display_name === "string" && tok.display_name.length > 0 ? tok.display_name : loginId.trim();
       const roles = Array.isArray(tok.roles) ? tok.roles.filter((x): x is string => typeof x === "string") : undefined;
-      const platformAdmin = sessionHasPlatformAdminRole(roles);
+      /** 与 `getSession()` 的派生**对齐**：仅当租户为平台保留 slug 且 roles 含 platform_admin 才视为平台管理员。
+       * 避免登录响应中错误返回 platform_admin 角色时，刚登录瞬间被误导到 /tenant-management。 */
+      const platformAdmin = isPlatformReservedTenantSlug(tid) && sessionHasPlatformAdminRole(roles);
       const lid = loginId.trim();
       const emailOut =
         typeof tok.email === "string" && tok.email.trim().length > 0
@@ -251,11 +259,13 @@ export function LoginPage() {
             {busy ? "登录中…" : "登录"}
           </button>
         </form>
-        <p className="mt-4 text-center text-sm">
-          <Link to="/register" state={location.state ?? undefined} className="text-zz-blue hover:underline">
-            注册新用户
-          </Link>
-        </p>
+        {PUBLIC_REGISTER ? (
+          <p className="mt-4 text-center text-sm">
+            <Link to="/register" state={location.state ?? undefined} className="text-zz-blue hover:underline">
+              注册新用户
+            </Link>
+          </p>
+        ) : null}
         <div className="mt-6 border-t border-zz-border-light pt-6">
           <p className="text-xs leading-relaxed text-zz-muted">
             演示：可不填用户名/邮箱密码，仅用租户 ID{" "}

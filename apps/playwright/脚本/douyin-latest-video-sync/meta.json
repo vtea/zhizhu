@@ -1,0 +1,84 @@
+{
+  "rule_id": "douyin-latest-video-sync",
+  "name": "抖音最新视频同步",
+  "version": "0.1.0",
+  "target": "biz_video",
+  "owner": "growth-ops",
+  "console_base": "https://leads.cluerich.com",
+  "start_path": "/pc/accounts/matrix-rank/account-scene",
+  "params_schema": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["single_account", "enterprise_all_accounts"],
+        "default": "single_account",
+        "description": "single_account=单账号；enterprise_all_accounts=企业主体全账号"
+      },
+      "account_id": {
+        "type": "string",
+        "description": "单账号模式下必填（Runner 也会回退 task.account_id）"
+      },
+      "dy_homepage_url": {
+        "type": "string",
+        "description": "员工抖音主页 URL；优先于规则默认短链，用于确保采集目标账号正确"
+      },
+      "target_dy_unique_id": {
+        "type": "string",
+        "description": "可选：目标员工抖音号 unique_id；用于入库前反查并绑定系统 account_id；与 target_author_uid / target_account_id 一并用于作者归属过滤"
+      },
+      "target_author_uid": {
+        "type": "string",
+        "description": "可选：抖音作者 uid（aweme.author.uid）；与 account_id 等任填其一即可启用「仅本人视频」过滤"
+      },
+      "target_account_id": {
+        "type": "string",
+        "description": "可选：业务账号 id，可与 account_id 二选一；用于作者归属与行合并"
+      },
+      "dy_leads_enterprise_id": {
+        "type": "string",
+        "description": "企业主体标识；用于全账号模式任务上下文追溯"
+      },
+      "account_ids": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "全账号模式：主体下运营可用账号列表"
+      },
+      "limit_n": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 10000,
+        "default": 5000,
+        "description": "单账号最大入库条数保护上限（full / recent_72h 均生效，避免异常抓包导致单次任务过大）"
+      },
+      "biz_video_list_mode": {
+        "type": "string",
+        "enum": ["full", "recent_72h"],
+        "default": "recent_72h",
+        "description": "full：尽量采集并入库主页全部视频；recent_72h：按发布时间过滤，仅保留任务锚点前推 72 小时内的视频"
+      },
+      "biz_video_recent_hours": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 720,
+        "default": 72,
+        "description": "recent_72h 模式的时间窗小时数，默认 72（滚动时间窗）"
+      },
+      "biz_video_collect_scope": {
+        "type": "string",
+        "enum": ["latest_n", "profile_total"],
+        "default": "latest_n",
+        "description": "latest_n：仅按 limit_n 截取，不做「主页作品总数」遗漏告警；profile_total：以 DOM 展示的作品总数为基准，抓包解析条数不足时标记 coverage_gap"
+      },
+      "max_accounts": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 50,
+        "description": "全账号模式可选上限（由上游编排控制）"
+      }
+    },
+    "required": ["mode", "biz_video_list_mode"],
+    "additionalProperties": true
+  }
+}

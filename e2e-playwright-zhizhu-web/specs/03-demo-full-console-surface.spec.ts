@@ -20,7 +20,7 @@ const ROUTE_HEADING: { path: string; heading: string }[] = [
   { path: "/t/demo/ad-placements", heading: "投放管理" },
   { path: "/t/demo/device-binding", heading: "设备绑定" },
   { path: "/t/demo/system-settings/organization", heading: "组织与成员" },
-  { path: "/t/demo/system-settings/tasks", heading: "任务中心" },
+  { path: "/t/demo/task-center", heading: "任务中心" },
   { path: "/t/demo/system-settings/access", heading: "访问控制" },
   { path: "/t/demo/system-settings/audit", heading: "审计与导出" },
   // 邮件（SMTP）仅 platform_admin 可见，见 02-* 平台管理员用例，不在 demo 租户下验收
@@ -46,6 +46,19 @@ test.describe("知竹 Web：demo 控制台多路由", () => {
     }
   });
 
+  test("旧书签 /system-settings/tasks 重定向到 /task-center", async ({ page }) => {
+    await page.goto("/login", { waitUntil: "load" });
+    await page.getByLabel("租户 ID", { exact: true }).fill(DEMO_LOGIN.tenant);
+    await page.getByLabel("用户名或邮箱", { exact: true }).fill(DEMO_LOGIN.user);
+    await page.getByLabel("密码", { exact: true }).fill(DEMO_LOGIN.password);
+    await page.getByRole("button", { name: "登录" }).click();
+    await expect(page).toHaveURL(/\/t\/demo\/dashboard/);
+
+    await page.goto("/t/demo/system-settings/tasks", { waitUntil: "load" });
+    await expect(page).toHaveURL(/\/t\/demo\/task-center$/);
+    await expect(page.getByRole("heading", { name: "任务中心", exact: true })).toBeVisible();
+  });
+
   test("主菜单侧栏点击与 URL、主标题一致（防 NavLink/tenant 前缀错误）", async ({ page }) => {
     await page.goto("/login", { waitUntil: "load" });
     await page.getByLabel("租户 ID", { exact: true }).fill(DEMO_LOGIN.tenant);
@@ -58,6 +71,10 @@ test.describe("知竹 Web：demo 控制台多路由", () => {
     await main.getByRole("link", { name: "线索管理" }).click();
     await expect(page).toHaveURL(/\/t\/demo\/leads/);
     await expect(page.getByRole("heading", { name: "线索管理", exact: true })).toBeVisible();
+
+    await main.getByRole("link", { name: "任务中心" }).click();
+    await expect(page).toHaveURL(/\/t\/demo\/task-center/);
+    await expect(page.getByRole("heading", { name: "任务中心", exact: true })).toBeVisible();
 
     await main.getByRole("link", { name: "系统设置" }).click();
     await expect(page).toHaveURL(/\/t\/demo\/system-settings/);

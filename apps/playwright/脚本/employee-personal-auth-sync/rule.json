@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "title": "员工个人号授权同步",
+  "description": "员工个人号授权采集（控制台下发可用版）：抓取 bff/account 与 perms/confer/list；翻页累加全部分页",
+  "expects_captures": [
+    "employee_personal_auth_payload",
+    "employee_account_context"
+  ],
+  "steps": [
+    {
+      "type": "captureResponse",
+      "step_id": "capture_account_context",
+      "url_pattern": "/bff/account",
+      "key": "employee_account_context"
+    },
+    {
+      "type": "captureResponse",
+      "step_id": "capture_personal_auth_list",
+      "url_pattern": "/aweme/v1/saiyan/perms/confer/list",
+      "key": "employee_personal_auth_payload",
+      "accumulate": true
+    },
+    {
+      "type": "goto",
+      "step_id": "goto_personal_auth_page",
+      "url": "https://leads.cluerich.com/pc/douyin-mp/account-marketing/Employee/EConferEmployee",
+      "waitUntil": "domcontentloaded"
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_account_context_payload",
+      "response_key": "employee_account_context",
+      "timeout_ms": 45000
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_personal_auth_payload",
+      "response_key": "employee_personal_auth_payload",
+      "timeout_ms": 120000
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_pagination_render",
+      "selector": { "kind": "css", "value": "ul.semi-page" },
+      "timeout_ms": 30000
+    },
+    {
+      "type": "paginate",
+      "step_id": "paginate_personal_auth_pages",
+      "mode": "next_button",
+      "limit_pages": 500,
+      "step_wait_ms": 800,
+      "wait_capture_key": "employee_personal_auth_payload",
+      "next_button_selector": {
+        "kind": "css",
+        "value": "li.semi-page-next:not(.semi-page-item-disabled)",
+        "fallbacks": [
+          { "kind": "css", "value": ".mp-semi-table-pagination li.semi-page-next:not(.semi-page-item-disabled)" },
+          { "kind": "css", "value": ".semi-page li.semi-page-item.semi-page-next:not(.semi-page-item-disabled)" },
+          { "kind": "css", "value": "li[class~='semi-page-next']:not([class*='semi-page-item-disabled'])" },
+          { "kind": "css", "value": ".byted-pagination-pagination-item-next:not(.byted-pagination-pagination-item-disabled) button" },
+          { "kind": "css", "value": "li[title='下一页']:not([aria-disabled='true']) button" }
+        ]
+      }
+    }
+  ]
+}

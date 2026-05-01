@@ -141,3 +141,32 @@ export function getApiBaseUrl(): string {
   }
   return DEFAULT_API_BASE;
 }
+
+/**
+ * 第三方/业务控制台（如 Douyin 线索后台），与 `getWebBaseUrl()` 的知竹 Web 不同；
+ * 传给 Runner 用于 `goto.path` 拼接。优先 task payload / 文件 meta，其次 `ZHIZHU_CONSOLE_BASE_URL`。
+ */
+export function resolveZhizhuRunnerConsoleBase(hints?: {
+  taskPayloadConsoleBase?: unknown;
+  ruleMetaConsoleBase?: unknown;
+}): string {
+  const fromPayload =
+    typeof hints?.taskPayloadConsoleBase === "string" ? hints.taskPayloadConsoleBase.trim() : "";
+  const fromMeta = typeof hints?.ruleMetaConsoleBase === "string" ? hints.ruleMetaConsoleBase.trim() : "";
+  const fromEnv = process.env.ZHIZHU_CONSOLE_BASE_URL?.trim() ?? "";
+  const raw = fromPayload || fromMeta || fromEnv;
+  if (!raw) {
+    return "";
+  }
+  try {
+    const u = /^https?:\/\//i.test(raw) ? new URL(raw) : new URL(`https://${raw}`);
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return "";
+    }
+    u.username = "";
+    u.password = "";
+    return u.origin;
+  } catch {
+    return "";
+  }
+}

@@ -30,15 +30,23 @@ export async function probeApiHealth(): Promise<
       headers: { Accept: "application/json" },
     });
     const ms = Date.now() - t0;
-    const ok = res.ok;
-    /** 读完 body，避免 undici/keep-alive 下未消费响应占着连接 */
+    let raw = "";
     try {
-      await res.arrayBuffer();
+      raw = new TextDecoder().decode(await res.arrayBuffer());
     } catch {
-      /* noop */
+      raw = "";
     }
-    if (!ok) {
-      return { ok: false, error: `HTTP ${res.status}` };
+    if (!res.ok) {
+      let suffix = "";
+      try {
+        const j = JSON.parse(raw) as { error?: string };
+        if (typeof j.error === "string" && j.error.trim()) {
+          suffix = ` · ${j.error.trim()}`;
+        }
+      } catch {
+        /* noop */
+      }
+      return { ok: false, error: `HTTP ${res.status}${suffix}` };
     }
     return { ok: true, latencyMs: ms };
   } catch (e) {

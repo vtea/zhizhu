@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "title": "抖音最新视频同步",
+  "description": "进入短视频页并抓取列表与详情接口响应；Runner 按 limit_n 裁剪后，客户端将 dy_video_url 规范为 www.douyin.com/video/{id}、标题去 # 话题，并在提供 account_id / target_* 等参数时按 aweme.author 过滤非本人视频；SEO 推荐类 link_type 在入库侧丢弃。尽量触发作品列表与详情请求以便有 author 与正文。",
+  "expects_captures": ["dy_latest_video_payload", "dy_video_detail_payload", "dy_profile_works_count_dom"],
+  "steps": [
+    {
+      "type": "captureResponse",
+      "step_id": "capture_video_list_from_shortlink_seo",
+      "url_pattern": "/aweme/v1/web/seo/inner/link/",
+      "key": "dy_latest_video_payload",
+      "accumulate": true
+    },
+    {
+      "type": "captureResponse",
+      "step_id": "capture_video_list_fallback_post",
+      "url_pattern": "/aweme/v1/web/aweme/post/",
+      "key": "dy_latest_video_payload",
+      "accumulate": true
+    },
+    {
+      "type": "captureResponse",
+      "step_id": "capture_video_detail_payload",
+      "url_pattern": "/aweme/v1/web/(aweme/detail|note/detail|note/info|aweme/post)/",
+      "url_pattern_is_regex": true,
+      "key": "dy_video_detail_payload",
+      "accumulate": true
+    },
+    {
+      "type": "goto",
+      "step_id": "goto_video_page",
+      "url": "{{dy_homepage_url}}",
+      "waitUntil": "domcontentloaded"
+    },
+    {
+      "type": "abortIfVisible",
+      "step_id": "abort_if_douyin_login_wall",
+      "timeout_ms": 6000,
+      "message": "抖音页面要求登录。请在当前 Playwright 浏览器配置（本机登录态）中登录抖音后，再重新执行采集。",
+      "selector": {
+        "kind": "css",
+        "value": "text=登录后免费畅享高清视频",
+        "fallbacks": [{ "kind": "css", "value": "text=扫码登录" }]
+      }
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_video_payload",
+      "response_key": "dy_latest_video_payload",
+      "timeout_ms": 45000
+    },
+    {
+      "type": "click",
+      "step_id": "switch_to_works_tab",
+      "optional": true,
+      "selector": {
+        "kind": "css",
+        "value": "[data-e2e='user-tab-count-item']:has-text('作品')",
+        "fallbacks": [
+          { "kind": "css", "value": "a:has-text('作品')" },
+          { "kind": "css", "value": "[role='tab']:has-text('作品')" }
+        ]
+      }
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_works_tab_payload",
+      "response_key": "dy_latest_video_payload",
+      "accumulate_grow_by": 1,
+      "optional": true,
+      "timeout_ms": 30000
+    },
+    {
+      "type": "captureDomAssign",
+      "step_id": "capture_profile_works_count_dom",
+      "key": "dy_profile_works_count_dom",
+      "optional": true,
+      "parse": "int",
+      "timeout_ms": 12000,
+      "selector": {
+        "kind": "css",
+        "value": "[data-e2e='user-tab-count-item']:has-text('作品') [data-e2e='user-tab-count']",
+        "fallbacks": [{ "kind": "css", "value": "h2:has-text('作品') [data-e2e='user-tab-count']" }]
+      }
+    },
+    {
+      "type": "paginate",
+      "step_id": "scroll_profile_to_load_more_posts",
+      "mode": "scroll",
+      "scroll_pixels": 2200,
+      "limit_pages": 40,
+      "step_wait_ms": 1200,
+      "wait_capture_key": "dy_latest_video_payload",
+      "wait_capture_timeout_ms": 8000,
+      "wait_capture_retry_timeout_ms": 12000
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_more_post_payload",
+      "response_key": "dy_latest_video_payload",
+      "accumulate_grow_by": 1,
+      "optional": true,
+      "timeout_ms": 30000
+    },
+    {
+      "type": "click",
+      "step_id": "open_first_video_detail",
+      "optional": true,
+      "selector": {
+        "kind": "css",
+        "value": "[data-e2e='user-post-item'] a[href*='/video/']",
+        "fallbacks": [
+          { "kind": "css", "value": "[data-e2e='user-video-item'] a[href*='/video/']" },
+          { "kind": "css", "value": "ul[data-e2e='scroll-list'] a[href*='/video/']" },
+          { "kind": "css", "value": "[data-e2e='user-post-item'] a[href*='/note/']" },
+          { "kind": "css", "value": "[data-e2e='user-video-item'] a[href*='/note/']" },
+          { "kind": "css", "value": "ul[data-e2e='scroll-list'] a[href*='/note/']" }
+        ]
+      }
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_video_detail_payload",
+      "response_key": "dy_video_detail_payload",
+      "accumulate_grow_by": 1,
+      "optional": true,
+      "timeout_ms": 30000
+    }
+  ]
+}

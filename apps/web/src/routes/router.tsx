@@ -23,6 +23,7 @@ import { AdPlacementsPage } from "@/pages/AdPlacementsPage";
 import { VideosPage } from "@/pages/VideosPage";
 import { RootOrAppRedirect } from "@/routes/RootOrAppRedirect";
 import {
+  RedirectLegacySystemSettingsTasksToTaskCenter,
   RedirectUnknownToAutomationRulesList,
   RedirectUnknownToSystemSettingsOrg,
   RedirectUnknownToTenantDashboard,
@@ -51,6 +52,7 @@ export const router = createBrowserRouter([
               { path: "*", element: <RedirectUnknownToAutomationRulesList /> },
             ],
           },
+          { path: "task-center", element: <TaskCenterPage /> },
           { path: "leads", element: <LeadsPage /> },
           { path: "videos", element: <VideosPage /> },
           { path: "recommended-videos", element: <RecommendedVideosPage /> },
@@ -63,7 +65,7 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <Navigate to="organization" replace /> },
               { path: "organization", element: <OrganizationSettingsPage /> },
-              { path: "tasks", element: <TaskCenterPage /> },
+              { path: "tasks", element: <RedirectLegacySystemSettingsTasksToTaskCenter /> },
               { path: "access", element: <AccessControlPage /> },
               { path: "audit", element: <AuditEventsPage /> },
               { path: "mail", element: <SmtpSettingsPage /> },

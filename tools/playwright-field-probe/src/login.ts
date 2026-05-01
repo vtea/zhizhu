@@ -8,9 +8,10 @@
  *   npm run login:persistent
  *   PLAYWRIGHT_BROWSER_PROFILE=jiacheng-guoji npm run login:persistent
  */
-import { chromium, type Browser, type BrowserContext } from "playwright";
+import type { Browser, BrowserContext } from "playwright";
 import fs from "node:fs/promises";
 import readline from "node:readline/promises";
+import { launchFingerprintedBrowserContext } from "@zhizhu/playwright-browser-fingerprint";
 import {
   authDir,
   getBrowserProfileSlug,
@@ -48,8 +49,16 @@ if (persistent) {
     headless: false,
   });
 } else {
-  browser = await chromium.launch({ headless: false });
-  context = await browser.newContext();
+  /**
+   * 一次性 storageState 登录：仍然要走指纹包，否则首次登录可能被验证码 / 风控拦截，
+   * 抖音侧会把"陌生指纹 + 新会话 + 立即跳到 /leads.cluerich.com"标记为高风险。
+   */
+  const launched = await launchFingerprintedBrowserContext({
+    headless: false,
+    seedOverride: `field-probe-login:${slug}`,
+  });
+  browser = launched.browser;
+  context = launched.context;
 }
 
 const page = context.pages()[0] ?? (await context.newPage());

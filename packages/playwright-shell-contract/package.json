@@ -1,0 +1,16 @@
+{
+  "name": "@zhizhu/playwright-shell-contract",
+  "private": true,
+  "version": "0.1.0",
+  "description": "知竹：Playwright shell 配置 browser_profile_slug / 默认起始地址 的共享校验（Electron 与 API 同步一致）",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "postinstall": "node -e \"const cp=require('node:child_process');const hasTsc=(()=>{try{return !!require.resolve('typescript/bin/tsc')}catch{return false}})();if(!hasTsc){console.log('[playwright-shell-contract] skip build: typescript not installed');process.exit(0);}cp.execSync('npm run build',{stdio:'inherit'});\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "~5.8.0"
+  }
+}

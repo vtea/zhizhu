@@ -1,7 +1,13 @@
 import { DataTable, type DataColumn } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
+import { Banner, Button, Field, OverlaySectionCard, Pill, TextInput } from "@/components/ui";
 import { getApiBaseUrl } from "@/api/env";
-import { createAutomationRule, deleteAutomationRule, listRules } from "@/api/rules";
+import {
+  createAutomationRule,
+  deleteAutomationRule,
+  listAutomationRuleDeviceDraftCounts,
+  listRules,
+} from "@/api/rules";
 import { useTenantId } from "@/hooks/useTenantId";
 import { formatDateTime } from "@/lib/format";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
@@ -22,6 +28,13 @@ export function AutomationRulesListPage() {
   const query = useQuery({
     queryKey: ["automation-rules", tenantId],
     queryFn: () => listRules(tenantId),
+  });
+
+  /** 活跃设备草稿数（列表页提醒「N 条待审」），未连接 API 时返回空对象 */
+  const draftCountsQ = useQuery({
+    queryKey: ["automation-rule-device-draft-counts", tenantId],
+    queryFn: () => listAutomationRuleDeviceDraftCounts(tenantId),
+    enabled: api,
   });
 
   const createMut = useMutation({
@@ -58,29 +71,36 @@ export function AutomationRulesListPage() {
       id: "status",
       header: "状态",
       cell: (r) =>
-        r.status === "published" ? (
-          <span className="rounded-full bg-zz-snow px-2 py-0.5 text-xs text-zz-near">已发布</span>
-        ) : (
-          <span className="rounded-full border border-zz-border-light px-2 py-0.5 text-xs text-zz-muted">草稿</span>
-        ),
+        r.status === "published" ? <Pill tone="success">已发布</Pill> : <Pill tone="neutral">草稿</Pill>,
     },
     { id: "ver", header: "版本", cell: (r) => <span className="font-mono text-xs">{r.version}</span> },
     { id: "updated", header: "最近更新", cell: (r) => formatDateTime(r.updated_at) },
     {
+      id: "device_drafts",
+      header: "活跃设备草稿",
+      cell: (r) => {
+        const n = draftCountsQ.data?.[r.rule_id] ?? 0;
+        if (n <= 0) {
+          return <span className="text-xs text-zz-muted">0</span>;
+        }
+        return <Pill tone="warn">{n} 条待审</Pill>;
+      },
+    },
+    {
       id: "op",
       header: "操作",
       cell: (r) => (
-        <div className="flex flex-nowrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
-            className="inline-flex shrink-0 items-center justify-center rounded-full border border-zz-border bg-white px-2.5 py-1 text-xs font-medium text-zz-near shadow-sm transition hover:border-zz-blue hover:text-zz-blue"
+            className="zz-btn zz-btn-secondary zz-btn-sm"
             to={`/t/${encodeURIComponent(tenantId)}/automation-rules/rules/${encodeURIComponent(r.rule_id)}`}
           >
             编辑正文
           </Link>
           {api ? (
-            <button
-              type="button"
-              className="inline-flex shrink-0 items-center justify-center rounded-full border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 shadow-sm transition hover:bg-red-50 disabled:opacity-50"
+            <Button
+              variant="danger"
+              size="sm"
               disabled={delMut.isPending && delMut.variables === r.rule_id}
               onClick={() => {
                 if (confirm(`删除规则「${r.name}」？将同时清理该规则的下发日志。`)) {
@@ -89,7 +109,7 @@ export function AutomationRulesListPage() {
               }}
             >
               删除
-            </button>
+            </Button>
           ) : null}
         </div>
       ),
@@ -106,47 +126,52 @@ export function AutomationRulesListPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="自动化规则"
-        description="在网页端集中编辑与发布自动化规则；可新建草稿、保存正文并发布，或删除不再使用的规则。"
       />
-      <div className="mb-4 flex flex-wrap items-center justify-end">
+      <div className="flex flex-wrap items-center justify-end">
         {api ? (
-          <button
-            type="button"
-            className="shrink-0 rounded-full border border-zz-border bg-white px-4 py-2 text-sm font-medium text-zz-near shadow-sm transition hover:border-zz-near hover:bg-zz-snow"
+          <Button
+            variant="secondary"
+            size="md"
             onClick={() => {
               setMsg(null);
               setCreateOpen(true);
             }}
           >
             添加规则
-          </button>
+          </Button>
         ) : null}
       </div>
-      {api && createOpen ? (
-        <section className="mb-6 max-w-xl rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-6">
-          <h2 className="text-sm font-semibold text-zz-near">新建规则</h2>
-          <form className="mt-3 flex flex-wrap items-end gap-3" onSubmit={(ev) => onCreate(ev)}>
-            <label className="text-sm">
-              名称
-              <input
-                className="mt-1 block min-w-[12rem] rounded-lg border border-zz-border px-3 py-2 text-sm"
-                value={newName}
-                onChange={(ev) => setNewName(ev.target.value)}
-              />
-            </label>
-            <button
-              type="submit"
-              disabled={createMut.isPending}
-              className="rounded-full bg-zz-black px-4 py-2 text-sm text-white disabled:opacity-50"
-            >
+      {api ? (
+        <OverlaySectionCard
+          open={createOpen}
+          onClose={() => {
+            setMsg(null);
+            setCreateOpen(false);
+          }}
+          title="新建规则"
+          titleAs="h2"
+        >
+          <form className="flex flex-wrap items-end gap-3" onSubmit={(ev) => onCreate(ev)}>
+            <Field label="名称">
+              {({ id }) => (
+                <TextInput
+                  id={id}
+                  className="w-full sm:min-w-[12rem] sm:w-auto"
+                  value={newName}
+                  onChange={(ev) => setNewName(ev.target.value)}
+                />
+              )}
+            </Field>
+            <Button type="submit" variant="primary" size="md" isLoading={createMut.isPending}>
               {createMut.isPending ? "创建中…" : "创建并打开"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="rounded-full border border-zz-border px-4 py-2 text-sm"
+              variant="secondary"
+              size="md"
               disabled={createMut.isPending}
               onClick={() => {
                 setMsg(null);
@@ -154,20 +179,14 @@ export function AutomationRulesListPage() {
               }}
             >
               取消
-            </button>
+            </Button>
           </form>
-        </section>
-      ) : !api ? (
-        <p className="mb-4 rounded-lg border border-zz-border-light bg-zz-snow/40 px-4 py-3 text-sm text-zz-muted">
-          未连接控制台接口时为本地演示；连接并登录后可通过「添加规则」真实创建，或在此查看演示数据。
-        </p>
-      ) : null}
-      {msg ? <p className="mb-3 text-sm text-red-700">{msg}</p> : null}
-      {query.isError ? (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          加载失败：{formatQueryError(query.error)}
-        </div>
-      ) : null}
+        </OverlaySectionCard>
+      ) : (
+        <Banner kind="info">未连接控制台接口时为本地演示；连接并登录后可通过「添加规则」真实创建，或在此查看演示数据。</Banner>
+      )}
+      {msg ? <Banner kind="error">{msg}</Banner> : null}
+      {query.isError ? <Banner kind="error">加载失败：{formatQueryError(query.error)}</Banner> : null}
       <DataTable
         columns={columns}
         rows={query.data ?? []}

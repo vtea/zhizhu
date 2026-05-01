@@ -1,6 +1,8 @@
 import { getApiBaseUrl } from "@/api/env";
 import { type AnalyticsFilters, inInteractionWindow } from "@/api/analytics-filters";
 import { apiGetJson } from "@/api/http";
+import { sameBizAccountId } from "@/lib/bizAccountId";
+import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
 import { sleepMock } from "@/mocks/delay";
 import { mockLeads, mockVideos, MOCK_TENANT } from "@/mocks/seed";
 
@@ -12,6 +14,9 @@ export type AccountBreakdownRow = {
   leads: number;
   videos: number;
   plays: number;
+  likes: number;
+  comments: number;
+  favorites: number;
 };
 
 export type DashboardSummary = {
@@ -30,7 +35,10 @@ function filterLeadsForKpi(
   f: AnalyticsFilters,
 ): (typeof mockLeads)[number][] {
   return mockLeads.filter((l) => {
-    if (f.accountId && l.account_id !== f.accountId) {
+    if (f.dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(l.dy_leads_enterprise_id, f.dyLeadsEnterpriseId)) {
+      return false;
+    }
+    if (f.accountId && !sameBizAccountId(l.account_id, f.accountId)) {
       return false;
     }
     return inInteractionWindow(l.dy_last_interaction_at, f.from, f.to);
@@ -41,7 +49,10 @@ function filterVideosForKpi(
   f: AnalyticsFilters,
 ): (typeof mockVideos)[number][] {
   return mockVideos.filter((v) => {
-    if (f.accountId && v.account_id !== f.accountId) {
+    if (f.dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(v.dy_leads_enterprise_id, f.dyLeadsEnterpriseId)) {
+      return false;
+    }
+    if (f.accountId && !sameBizAccountId(v.account_id, f.accountId)) {
       return false;
     }
     const pub = v.dy_publish_at;
@@ -80,21 +91,27 @@ function mockAccountBreakdown(
 ): AccountBreakdownRow[] {
   const ids = new Set<string>();
   for (const l of leads) {
-    ids.add(l.account_id);
+    ids.add(String(l.account_id));
   }
   for (const v of videos) {
-    ids.add(v.account_id);
+    ids.add(String(v.account_id));
   }
   return [...ids].map((account_id) => {
-    const lc = leads.filter((x) => x.account_id === account_id).length;
-    const vs = videos.filter((x) => x.account_id === account_id);
+    const lc = leads.filter((x) => sameBizAccountId(x.account_id, account_id)).length;
+    const vs = videos.filter((x) => sameBizAccountId(x.account_id, account_id));
     const plays = vs.reduce((s, x) => s + (x.dy_play_count ?? 0), 0);
+    const likes = vs.reduce((s, x) => s + (x.dy_like_count ?? 0), 0);
+    const comments = vs.reduce((s, x) => s + (x.dy_comment_count ?? 0), 0);
+    const favorites = vs.reduce((s, x) => s + (x.dy_favorite_count ?? 0), 0);
     return {
       account_id,
       display_name: null,
       leads: lc,
       videos: vs.length,
       plays,
+      likes,
+      comments,
+      favorites,
     };
   });
 }
@@ -111,6 +128,9 @@ export async function getDashboardSummary(tenantId: string, filters: AnalyticsFi
     }
     if (filters.to) {
       qs.set("to", filters.to);
+    }
+    if (filters.dyLeadsEnterpriseId?.trim()) {
+      qs.set("dy_leads_enterprise_id", filters.dyLeadsEnterpriseId.trim());
     }
     const q = qs.toString();
     return apiGetJson<DashboardSummary>(

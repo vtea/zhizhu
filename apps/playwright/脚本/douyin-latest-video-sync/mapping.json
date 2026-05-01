@@ -1,0 +1,23 @@
+{
+  "target": "biz_video",
+  "defaults": {
+    "platform": "douyin"
+  },
+  "idempotency_keys": ["tenant_id", "platform", "dy_video_id"],
+  "field_map": {
+    "account_id": "account_id",
+    "dy_video_id": "dy_video_id",
+    "dy_title": "dy_title",
+    "dy_video_url": "dy_video_url",
+    "dy_cover_url": "dy_cover_url",
+    "dy_publish_at": "dy_publish_at",
+    "dy_duration_sec": "dy_duration_sec",
+    "dy_play_count": "dy_play_count",
+    "dy_like_count": "dy_like_count",
+    "dy_comment_count": "dy_comment_count",
+    "dy_favorite_count": "dy_favorite_count",
+    "dy_share_count": "dy_share_count",
+    "metric_synced_at": "metric_synced_at",
+    "sync_batch_id": "sync_batch_id"
+  }
+}

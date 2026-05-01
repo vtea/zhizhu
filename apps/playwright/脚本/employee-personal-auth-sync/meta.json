@@ -1,0 +1,21 @@
+{
+  "rule_id": "employee-personal-auth-sync",
+  "name": "员工个人号授权同步",
+  "version": "0.1.0",
+  "target": "employee_personal_auth",
+  "owner": "growth-ops",
+  "console_base": "https://leads.cluerich.com",
+  "start_path": "/pc/douyin-mp/account-marketing/Employee/EConferEmployee",
+  "params_schema": {
+    "type": "object",
+    "properties": {
+      "page_size": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 20
+      }
+    },
+    "additionalProperties": true
+  }
+}

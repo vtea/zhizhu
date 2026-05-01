@@ -1,24 +1,30 @@
 import { PageHeader } from "@/components/PageHeader";
-import { getDashboardSummary } from "@/api/dashboard";
+import { Banner, Button, Field, SectionCard, SelectInput, TextInput } from "@/components/ui";
+import { getDashboardSummary, type LeadTrendPoint } from "@/api/dashboard";
 import { listAllAccounts } from "@/api/accounts";
 import { getApiBaseUrl } from "@/api/env";
 import { createSyncDataTask } from "@/api/consoleExtras";
 import { listDevices } from "@/api/devices";
+import { listRules } from "@/api/rules";
 import type { AnalyticsFilters } from "@/api/analytics-filters";
 import { parseYmd, ymdDateInputsFromSearchWithStrip } from "@/api/analytics-filters";
+import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
+import { useStripInvalidAccountSearchParam } from "@/hooks/useStripInvalidAccountSearchParam";
 import { useTenantId } from "@/hooks/useTenantId";
+import { accountFilterSelectValue } from "@/lib/accountFilterSelectValue";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-function KpiCard({ title, value, hint }: { title: string; value: string; hint?: string }) {
+function KpiCard({ title, value, valueClassName }: { title: string; value: string; valueClassName?: string }) {
   return (
-    <div className="rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white px-6 py-5">
+    <div className="rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white px-4 py-4">
       <div className="text-xs font-medium uppercase tracking-wide text-zz-muted">{title}</div>
-      <div className="mt-2 font-display text-3xl font-normal text-zz-black">{value}</div>
-      {hint ? <div className="mt-2 text-xs text-zz-muted">{hint}</div> : null}
+      <div className={["mt-1.5 font-display font-normal text-zz-black", valueClassName ?? "text-2xl"].join(" ")}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -31,16 +37,47 @@ function buildFilters(sp: URLSearchParams): AnalyticsFilters {
   };
 }
 
+function DashboardLeadTrendTable({ rows }: { rows: LeadTrendPoint[] }) {
+  return (
+    <div className="min-w-0 overflow-x-auto">
+      <table className="zz-table w-auto min-w-[14rem] table-fixed [&_td]:px-1 [&_td]:py-1 [&_th]:px-1 [&_th]:py-1 [&_th]:text-[11px]">
+        <thead>
+          <tr>
+            <th className="w-[6.5rem]">日期</th>
+            <th className="w-[3.75rem]">未留资</th>
+            <th className="w-[3.75rem]">已留资</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.date}>
+              <td className="font-mono text-xs">{row.date}</td>
+              <td className="tabular-nums">{formatNumber(row.open)}</td>
+              <td className="tabular-nums">{formatNumber(row.converted)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function DashboardPage() {
   const tenantId = useTenantId();
+  const { selectedDyLeadsEnterpriseId } = useSelectedEnterprise();
   const qc = useQueryClient();
   const apiBase = getApiBaseUrl();
   const [search, setSearch] = useSearchParams();
   const filters = useMemo(() => buildFilters(search), [search]);
+  const filtersWithEnt = useMemo(
+    (): AnalyticsFilters => ({ ...filters, dyLeadsEnterpriseId: selectedDyLeadsEnterpriseId }),
+    [filters, selectedDyLeadsEnterpriseId],
+  );
 
   const [localFrom, setLocalFrom] = useState("");
   const [localTo, setLocalTo] = useState("");
   const [syncDeviceId, setSyncDeviceId] = useState("");
+  const [syncRuleId, setSyncRuleId] = useState("");
   const [syncAccountId, setSyncAccountId] = useState("");
   const [syncEnt, setSyncEnt] = useState("");
   const [syncBanner, setSyncBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -54,32 +91,85 @@ export function DashboardPage() {
     }
   }, [search, setSearch]);
 
+  useEffect(() => {
+    setSyncAccountId("");
+  }, [selectedDyLeadsEnterpriseId]);
+
+  useEffect(() => {
+    setSyncDeviceId("");
+    setSyncRuleId("");
+    setSyncAccountId("");
+    setSyncEnt("");
+    setSyncBanner(null);
+  }, [tenantId]);
+
   const accountsQ = useQuery({
-    queryKey: ["accounts-all", tenantId],
-    queryFn: () => listAllAccounts(tenantId),
+    queryKey: ["accounts-all", tenantId, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => listAllAccounts(tenantId, selectedDyLeadsEnterpriseId),
   });
 
+  const accountsSyncQ = useQuery({
+    queryKey: ["accounts-ops-eligible", tenantId, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => listAllAccounts(tenantId, selectedDyLeadsEnterpriseId, { activeOpsOnly: true }),
+    enabled: Boolean(apiBase),
+  });
+
+  useStripInvalidAccountSearchParam(search, setSearch, accountsQ.data, accountsQ.isPending, accountsQ.isError);
+
   const summary = useQuery({
-    queryKey: ["dashboard-summary", tenantId, filters],
-    queryFn: () => getDashboardSummary(tenantId, filters),
+    queryKey: ["dashboard-summary", tenantId, filters, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => getDashboardSummary(tenantId, filtersWithEnt),
   });
 
   const devicesQ = useQuery({
-    queryKey: ["devices", tenantId],
-    queryFn: () => listDevices(tenantId),
+    queryKey: ["devices", tenantId, selectedDyLeadsEnterpriseId ?? null],
+    queryFn: () => listDevices(tenantId, selectedDyLeadsEnterpriseId),
     enabled: Boolean(apiBase),
   });
+
+  const rulesQ = useQuery({
+    queryKey: ["automation-rules", tenantId],
+    queryFn: () => listRules(tenantId),
+    enabled: Boolean(apiBase),
+  });
+
+  const publishedRules = useMemo(
+    () => (rulesQ.data ?? []).filter((r) => r.status === "published" && r.rule_id.trim().length > 0),
+    [rulesQ.data],
+  );
 
   const syncMut = useMutation({
     mutationFn: async () => {
       if (!syncDeviceId || !syncAccountId) {
         throw new Error("请选择设备与业务账号");
       }
-      return createSyncDataTask(tenantId, {
-        device_id: syncDeviceId,
-        account_id: syncAccountId,
-        ...(syncEnt.trim() ? { dy_leads_enterprise_id: syncEnt.trim() } : {}),
-      });
+      if (!syncRuleId.trim()) {
+        throw new Error("请选择已发布的同步规则（与任务中心一致，客户端 Runner 依赖 rule_id）");
+      }
+      const acc = (accountsSyncQ.data ?? []).find((a) => a.account_id === syncAccountId);
+      const entResolved =
+        syncEnt.trim() ||
+        selectedDyLeadsEnterpriseId?.trim() ||
+        acc?.dy_leads_enterprise_id?.trim() ||
+        "";
+      return createSyncDataTask(
+        tenantId,
+        {
+          device_id: syncDeviceId,
+          account_id: syncAccountId,
+          rule_id: syncRuleId.trim(),
+          ...(entResolved ? { dy_leads_enterprise_id: entResolved } : {}),
+          payload: {
+            params: {
+              mode: "single_account",
+              limit_n: 20,
+              account_id: syncAccountId,
+              ...(entResolved ? { dy_leads_enterprise_id: entResolved } : {}),
+            },
+          },
+        },
+        { dyLeadsEnterpriseId: selectedDyLeadsEnterpriseId ?? null },
+      );
     },
     onSuccess: () => {
       setSyncBanner({
@@ -99,6 +189,10 @@ export function DashboardPage() {
   });
 
   const s = summary.data;
+  const leadTrend = s?.lead_trend;
+  const accountBreakdown = s?.account_breakdown;
+  const showLeadTrend = Boolean(leadTrend && leadTrend.length > 0);
+  const showAccountBreakdown = Boolean(accountBreakdown && accountBreakdown.length > 0);
 
   function applyQuery() {
     const next = new URLSearchParams(search);
@@ -116,204 +210,270 @@ export function DashboardPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-8">
       <PageHeader
         title="数据大盘"
-        description="按抖音业务账号与日期范围查看线索与视频聚合；含线索阶段趋势与分账号拆解。指标依赖客户端同步任务写入本系统库（见立项书数据大盘）。"
       />
-      <div className="mb-6 flex flex-wrap items-end gap-4 rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-snow/50 px-4 py-4">
-        <label className="text-sm text-zz-near">
-          业务账号
-          <select
-            className="mt-1 block min-w-[12rem] rounded-lg border border-zz-border bg-white px-3 py-2 text-sm"
-            value={search.get("accountId") ?? ""}
-            onChange={(ev) => {
-              const next = new URLSearchParams(search);
-              if (ev.target.value) {
-                next.set("accountId", ev.target.value);
-              } else {
-                next.delete("accountId");
-              }
-              setSearch(next, { replace: true });
-            }}
-            disabled={accountsQ.isPending}
-          >
-            <option value="">全部（RBAC 范围内）</option>
-            {(accountsQ.data ?? []).map((a) => (
-              <option key={a.account_id} value={a.account_id}>
-                {a.dy_nickname ?? a.account_id}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-sm text-zz-near">
-          开始日期
-          <input
-            type="date"
-            className="mt-1 block rounded-lg border border-zz-border bg-white px-3 py-2 text-sm"
-            value={localFrom}
-            onChange={(ev) => setLocalFrom(ev.target.value)}
-          />
-        </label>
-        <label className="text-sm text-zz-near">
-          结束日期
-          <input
-            type="date"
-            className="mt-1 block rounded-lg border border-zz-border bg-white px-3 py-2 text-sm"
-            value={localTo}
-            onChange={(ev) => setLocalTo(ev.target.value)}
-          />
-        </label>
-        <button
-          type="button"
-          className="rounded-full bg-zz-black px-4 py-2 text-sm text-white hover:bg-zz-deep"
-          onClick={applyQuery}
-        >
-          应用日期
-        </button>
-      </div>
-      {summary.isError ? (
-        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          加载失败：{formatQueryError(summary.error)}
-        </div>
-      ) : null}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <KpiCard title="线索总数" value={s ? formatNumber(s.leads_total) : summary.isPending ? "…" : "—"} />
-        <KpiCard title="未留资" value={s ? formatNumber(s.leads_open) : summary.isPending ? "…" : "—"} />
-        <KpiCard title="已留资" value={s ? formatNumber(s.leads_converted) : summary.isPending ? "…" : "—"} />
-        <KpiCard title="视频条数" value={s ? formatNumber(s.videos_total) : summary.isPending ? "…" : "—"} />
-        <KpiCard
-          title="播放量合计（快照）"
-          value={s ? formatNumber(s.plays_total) : summary.isPending ? "…" : "—"}
-          hint="在日期筛选下，仅统计发布时间在区间内的视频播放量。"
-        />
-        <KpiCard
-          title="数据刷新时间"
-          value={s ? formatDateTime(s.last_refreshed_at) : summary.isPending ? "…" : "—"}
-          hint="客户端同步任务完成后由服务端更新；mock 为当前时间。"
-        />
-      </div>
-
-      {s?.lead_trend && s.lead_trend.length > 0 ? (
-        <section className="mt-10">
-          <h2 className="mb-3 text-sm font-semibold text-zz-near">线索阶段趋势（按互动日）</h2>
-          <div className="overflow-x-auto rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white">
-            <table className="min-w-[28rem] w-full text-left text-sm">
-              <thead className="border-b border-zz-border-light bg-zz-snow/50 text-xs uppercase tracking-wide text-zz-muted">
-                <tr>
-                  <th className="px-4 py-2">日期</th>
-                  <th className="px-4 py-2">未留资</th>
-                  <th className="px-4 py-2">已留资</th>
-                </tr>
-              </thead>
-              <tbody>
-                {s.lead_trend.map((row) => (
-                  <tr key={row.date} className="border-b border-zz-border-light last:border-0">
-                    <td className="px-4 py-2 font-mono text-xs">{row.date}</td>
-                    <td className="px-4 py-2 tabular-nums">{formatNumber(row.open)}</td>
-                    <td className="px-4 py-2 tabular-nums">{formatNumber(row.converted)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
-
-      {s?.account_breakdown && s.account_breakdown.length > 0 ? (
-        <section className="mt-10">
-          <h2 className="mb-3 text-sm font-semibold text-zz-near">分账户汇总</h2>
-          <div className="overflow-x-auto rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white">
-            <table className="min-w-[36rem] w-full text-left text-sm">
-              <thead className="border-b border-zz-border-light bg-zz-snow/50 text-xs uppercase tracking-wide text-zz-muted">
-                <tr>
-                  <th className="px-4 py-2">账号</th>
-                  <th className="px-4 py-2">抖音固定账号 ID</th>
-                  <th className="px-4 py-2">线索数</th>
-                  <th className="px-4 py-2">视频数</th>
-                  <th className="px-4 py-2">播放量（快照）</th>
-                </tr>
-              </thead>
-              <tbody>
-                {s.account_breakdown.map((row) => (
-                  <tr key={row.account_id} className="border-b border-zz-border-light last:border-0">
-                    <td className="px-4 py-2">{row.display_name ?? "—"}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-zz-muted">{row.account_id}</td>
-                    <td className="px-4 py-2 tabular-nums">{formatNumber(row.leads)}</td>
-                    <td className="px-4 py-2 tabular-nums">{formatNumber(row.videos)}</td>
-                    <td className="px-4 py-2 tabular-nums">{formatNumber(row.plays)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
-
-      {apiBase ? (
-        <section className="mt-10 max-w-xl rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-snow/30 p-6">
-          <h2 className="text-sm font-semibold text-zz-near">同步数据</h2>
-          <p className="mt-2 text-xs leading-relaxed text-zz-muted">
-            在数据库中创建同步类队列入库任务；由已绑定客户端通过长连接或轮询拉取并执行（与立项书数据大盘章节一致）。
-          </p>
-          <div className="mt-4 space-y-3">
-            <label className="block text-sm text-zz-near">
-              目标设备
-              <select
-                className="mt-1 block w-full rounded-lg border border-zz-border bg-white px-3 py-2 text-sm"
-                value={syncDeviceId}
-                onChange={(ev) => setSyncDeviceId(ev.target.value)}
-                disabled={devicesQ.isPending}
-              >
-                <option value="">请选择目标设备</option>
-                {(devicesQ.data ?? []).map((d) => (
-                  <option key={d.device_id} value={d.device_id}>
-                    {d.label} · {d.device_id}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-sm text-zz-near">
-              业务账号（抖音固定 ID）
-              <select
-                className="mt-1 block w-full rounded-lg border border-zz-border bg-white px-3 py-2 text-sm"
-                value={syncAccountId}
-                onChange={(ev) => setSyncAccountId(ev.target.value)}
+      <SectionCard title="筛选条件" description="按业务账号与日期范围进一步聚焦下方所有指标。" titleAs="h2">
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="业务账号" className="w-full sm:min-w-[12rem] sm:w-auto">
+            {({ id, describedBy }) => (
+              <SelectInput
+                id={id}
+                aria-describedby={describedBy}
+                value={accountFilterSelectValue(
+                  search.get("accountId") ?? "",
+                  accountsQ.data,
+                  accountsQ.isPending,
+                  accountsQ.isError,
+                )}
                 disabled={accountsQ.isPending}
+                onChange={(ev) => {
+                  const next = new URLSearchParams(search);
+                  if (ev.target.value) {
+                    next.set("accountId", ev.target.value);
+                  } else {
+                    next.delete("accountId");
+                  }
+                  setSearch(next, { replace: true });
+                }}
               >
-                <option value="">请选择</option>
+                <option value="">全部（RBAC 范围内）</option>
                 {(accountsQ.data ?? []).map((a) => (
                   <option key={a.account_id} value={a.account_id}>
                     {a.dy_nickname ?? a.account_id}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label className="block text-sm text-zz-near">
-              线索企业主体 ID（可选）
-              <input
-                className="mt-1 block w-full rounded-lg border border-zz-border px-3 py-2 font-mono text-sm"
-                value={syncEnt}
-                onChange={(ev) => setSyncEnt(ev.target.value)}
-                placeholder="默认 ent-001"
+              </SelectInput>
+            )}
+          </Field>
+          <Field label="开始日期" className="w-full sm:w-auto">
+            {({ id }) => (
+              <TextInput
+                id={id}
+                type="date"
+                value={localFrom}
+                onChange={(ev) => setLocalFrom(ev.target.value)}
               />
-            </label>
-            <button
-              type="button"
-              className="rounded-full bg-zz-black px-4 py-2 text-sm text-white hover:bg-zz-deep disabled:opacity-50"
-              disabled={syncMut.isPending}
+            )}
+          </Field>
+          <Field label="结束日期" className="w-full sm:w-auto">
+            {({ id }) => (
+              <TextInput id={id} type="date" value={localTo} onChange={(ev) => setLocalTo(ev.target.value)} />
+            )}
+          </Field>
+          <Button variant="primary" size="md" onClick={applyQuery}>
+            应用日期
+          </Button>
+        </div>
+      </SectionCard>
+      {summary.isError ? <Banner kind="error">加载失败：{formatQueryError(summary.error)}</Banner> : null}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        <KpiCard title="线索总数" value={s ? formatNumber(s.leads_total) : summary.isPending ? "…" : "—"} />
+        <KpiCard title="未留资" value={s ? formatNumber(s.leads_open) : summary.isPending ? "…" : "—"} />
+        <KpiCard title="已留资" value={s ? formatNumber(s.leads_converted) : summary.isPending ? "…" : "—"} />
+        <KpiCard title="视频条数" value={s ? formatNumber(s.videos_total) : summary.isPending ? "…" : "—"} />
+        <KpiCard title="播放量合计（快照）" value={s ? formatNumber(s.plays_total) : summary.isPending ? "…" : "—"} />
+        <KpiCard
+          title="数据刷新时间"
+          value={s ? formatDateTime(s.last_refreshed_at) : summary.isPending ? "…" : "—"}
+          valueClassName="text-lg leading-tight"
+        />
+      </div>
+
+      {showLeadTrend && showAccountBreakdown && leadTrend && accountBreakdown ? (
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] lg:items-start">
+          <SectionCard
+            title="线索阶段趋势（按互动日）"
+            titleAs="h2"
+            className="lg:w-[24rem] lg:max-w-[24rem] lg:justify-self-start"
+          >
+            <div className="-mx-6 -mb-6 rounded-b-[var(--radius-signature)]">
+              <div className="overflow-x-auto px-2 pb-4">
+                <DashboardLeadTrendTable rows={leadTrend} />
+              </div>
+            </div>
+          </SectionCard>
+          <SectionCard title="分账户汇总" titleAs="h2" className="lg:min-w-0">
+            <div className="-mx-6 -mb-6 overflow-x-auto rounded-b-[var(--radius-signature)]">
+              <table className="zz-table min-w-[40rem] [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1 [&_th]:text-[11px]">
+                <thead>
+                  <tr>
+                    <th>账号</th>
+                    <th>线索数</th>
+                    <th>视频数</th>
+                    <th>播放量（快照）</th>
+                    <th>点赞</th>
+                    <th>评论</th>
+                    <th>收藏</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accountBreakdown.map((row) => (
+                    <tr key={row.account_id}>
+                      <td>{row.display_name ?? "—"}</td>
+                      <td className="tabular-nums">{formatNumber(row.leads)}</td>
+                      <td className="tabular-nums">{formatNumber(row.videos)}</td>
+                      <td className="tabular-nums">{formatNumber(row.plays)}</td>
+                      <td className="tabular-nums">{formatNumber(row.likes)}</td>
+                      <td className="tabular-nums">{formatNumber(row.comments)}</td>
+                      <td className="tabular-nums">{formatNumber(row.favorites)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
+        </div>
+      ) : (
+        <>
+          {showLeadTrend && leadTrend ? (
+            <SectionCard title="线索阶段趋势（按互动日）" titleAs="h2">
+              <div className="-mx-6 -mb-6 rounded-b-[var(--radius-signature)]">
+                <div className="overflow-x-auto px-2 pb-4">
+                  <DashboardLeadTrendTable rows={leadTrend} />
+                </div>
+              </div>
+            </SectionCard>
+          ) : null}
+          {showAccountBreakdown && accountBreakdown ? (
+            <SectionCard title="分账户汇总" titleAs="h2">
+              <div className="-mx-6 -mb-6 overflow-x-auto rounded-b-[var(--radius-signature)]">
+                <table className="zz-table min-w-[40rem] [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1 [&_th]:text-[11px]">
+                  <thead>
+                    <tr>
+                      <th>账号</th>
+                      <th>线索数</th>
+                      <th>视频数</th>
+                      <th>播放量（快照）</th>
+                      <th>点赞</th>
+                      <th>评论</th>
+                      <th>收藏</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accountBreakdown.map((row) => (
+                      <tr key={row.account_id}>
+                        <td>{row.display_name ?? "—"}</td>
+                        <td className="tabular-nums">{formatNumber(row.leads)}</td>
+                        <td className="tabular-nums">{formatNumber(row.videos)}</td>
+                        <td className="tabular-nums">{formatNumber(row.plays)}</td>
+                        <td className="tabular-nums">{formatNumber(row.likes)}</td>
+                        <td className="tabular-nums">{formatNumber(row.comments)}</td>
+                        <td className="tabular-nums">{formatNumber(row.favorites)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </SectionCard>
+          ) : null}
+        </>
+      )}
+
+      {apiBase ? (
+        <SectionCard
+          title="同步数据"
+          titleAs="h2"
+          description="在数据库中创建同步类队列入库任务；由已绑定客户端通过长连接或轮询拉取并执行（与立项书数据大盘章节一致）。"
+          className="max-w-xl"
+        >
+          <div className="space-y-4">
+            <Field label="目标设备">
+              {({ id, describedBy }) => (
+                <SelectInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={syncDeviceId}
+                  onChange={(ev) => setSyncDeviceId(ev.target.value)}
+                  disabled={devicesQ.isPending}
+                >
+                  <option value="">请选择目标设备</option>
+                  {(devicesQ.data ?? []).map((d) => (
+                    <option key={d.device_id} value={d.device_id}>
+                      {d.label} · {d.device_id}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+            <Field label="业务账号（抖音固定 ID）">
+              {({ id, describedBy }) => (
+                <SelectInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={accountFilterSelectValue(
+                    syncAccountId,
+                    accountsSyncQ.data,
+                    accountsSyncQ.isPending,
+                    accountsSyncQ.isError,
+                  )}
+                  onChange={(ev) => setSyncAccountId(ev.target.value)}
+                  disabled={accountsSyncQ.isPending || accountsSyncQ.isError}
+                >
+                  <option value="">请选择</option>
+                  {(accountsSyncQ.data ?? []).map((a) => (
+                    <option key={a.account_id} value={a.account_id}>
+                      {a.dy_nickname ?? a.account_id}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+            <Field label="同步规则（已发布）">
+              {({ id, describedBy }) => (
+                <SelectInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={syncRuleId}
+                  onChange={(ev) => setSyncRuleId(ev.target.value)}
+                  disabled={rulesQ.isPending || rulesQ.isError}
+                >
+                  <option value="">
+                    {rulesQ.isPending
+                      ? "加载规则中…"
+                      : rulesQ.isError
+                        ? "规则加载失败"
+                        : publishedRules.length === 0
+                          ? "暂无已发布规则，请先在自动化规则中发布"
+                          : "请选择规则"}
+                  </option>
+                  {publishedRules.map((r) => (
+                    <option key={r.rule_id} value={r.rule_id}>
+                      {r.name} · {r.rule_id}
+                    </option>
+                  ))}
+                </SelectInput>
+              )}
+            </Field>
+            <Field label="线索企业主体 ID（可选）">
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  mono
+                  value={syncEnt}
+                  onChange={(ev) => setSyncEnt(ev.target.value)}
+                  placeholder="默认 ent-001"
+                />
+              )}
+            </Field>
+            <Button
+              variant="primary"
+              size="md"
+              isLoading={syncMut.isPending}
               onClick={() => {
                 setSyncBanner(null);
                 syncMut.mutate();
               }}
             >
               {syncMut.isPending ? "提交中…" : "创建同步任务"}
-            </button>
+            </Button>
             {syncBanner ? (
-              <p className={`text-sm ${syncBanner.kind === "err" ? "text-red-700" : "text-zz-blue"}`}>{syncBanner.text}</p>
+              <Banner kind={syncBanner.kind === "err" ? "error" : "info"}>{syncBanner.text}</Banner>
             ) : null}
           </div>
-        </section>
+        </SectionCard>
       ) : null}
     </div>
   );

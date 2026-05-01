@@ -4,12 +4,15 @@ import { getApiBaseUrl } from "@/api/env";
 import { resolvePathAfterSessionEstablished } from "@/lib/postLoginNavigation";
 import { LOGIN_USERNAME_HINT, validateLoginUsernameClient } from "@/auth/loginUsernameRules";
 import { apiPostJson } from "@/api/http";
+import { Banner, Button, Field, TextInput } from "@/components/ui";
 import { formatAuthFormError } from "@/lib/queryError";
 import { useQueryClient } from "@tanstack/react-query";
 import { FormEvent, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 const DEMO_TENANT = "demo";
+
+const PUBLIC_REGISTER = import.meta.env.VITE_CONSOLE_PUBLIC_REGISTER === "true";
 
 export function RegisterPage() {
   const navigate = useNavigate();
@@ -93,93 +96,122 @@ export function RegisterPage() {
     void navigate(resolvePathAfterSessionEstablished(location.state, newSession), { replace: true });
   }
 
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-zz-snow px-4">
-      <div className="w-full max-w-md rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white px-8 py-10 shadow-none">
-        <h1 className="font-display text-center text-3xl font-normal text-zz-black">注册控制台用户</h1>
-        <p className="mt-2 text-center text-sm text-zz-muted">
-          在同一租户下同时设置<strong>登录用户名</strong>与<strong>邮箱</strong>；登录时任填其一即可。JWT 的{" "}
-          <span className="font-mono">sub</span> 仍为邮箱，便于审计。
-        </p>
-        {!base ? (
-          <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            当前未配置 API 地址。你可
-            <button type="button" className="mx-1 text-zz-blue underline" onClick={() => void skipRegister()}>
-              跳过注册直接进入演示租户
-            </button>
-            。
+  if (!PUBLIC_REGISTER) {
+    return (
+      <div className="flex min-h-[60vh] flex-col items-center justify-center bg-zz-snow px-4 py-12">
+        <div className="w-full max-w-md rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-8 shadow-sm">
+          <h1 className="text-lg font-semibold text-zz-near">未开放自助注册</h1>
+          <p className="mt-2 text-sm text-zz-muted">当前环境未开启公开注册，请联系管理员通过平台开通控制台账号。</p>
+          <p className="mt-4 text-sm">
+            <Link to="/login" className="text-zz-blue hover:underline">
+              返回登录
+            </Link>
           </p>
-        ) : null}
-        <form className="mt-8 space-y-4" onSubmit={(ev) => void onSubmit(ev)}>
-          <label className="block text-sm text-zz-near">
-            租户 ID
-            <input
-              className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm outline-none focus:border-zz-focus"
-              value={tenant}
-              onChange={(ev) => setTenant(ev.target.value)}
-              autoComplete="organization"
-            />
-          </label>
-          <label className="block text-sm text-zz-near">
-            登录用户名
-            <input
-              type="text"
-              className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm outline-none focus:border-zz-focus"
-              value={username}
-              onChange={(ev) => setUsername(ev.target.value)}
-              placeholder="3–32 位小写，字母或数字开头，可含 _ -"
-              autoComplete="off"
-              required
-            />
-            <p className="mt-1 text-xs text-zz-muted">{LOGIN_USERNAME_HINT}</p>
-          </label>
-          <label className="block text-sm text-zz-near">
-            邮箱
-            <input
-              type="email"
-              className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm outline-none focus:border-zz-focus"
-              value={email}
-              onChange={(ev) => setEmail(ev.target.value)}
-              autoComplete="email"
-              required
-            />
-          </label>
-          <label className="block text-sm text-zz-near">
-            密码（至少 8 位）
-            <input
-              type="password"
-              className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm outline-none focus:border-zz-focus"
-              value={password}
-              onChange={(ev) => setPassword(ev.target.value)}
-              autoComplete="new-password"
-              minLength={8}
-              required
-            />
-          </label>
-          <label className="block text-sm text-zz-near">
-            显示名（可选）
-            <input
-              type="text"
-              className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm outline-none focus:border-zz-focus"
-              value={displayName}
-              onChange={(ev) => setDisplayName(ev.target.value)}
-            />
-          </label>
-          {err ? <p className="text-sm text-red-700">{err}</p> : null}
-          <button
-            type="submit"
-            disabled={busy || !base}
-            className="w-full rounded-full bg-zz-black px-4 py-2.5 text-sm font-medium text-zz-white transition hover:bg-zz-deep focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/50 disabled:opacity-60"
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-zz-snow px-4 py-12">
+      <div className="w-full max-w-md">
+        <div className="mb-6 flex flex-col items-center gap-2 text-center">
+          <span
+            aria-hidden="true"
+            className="inline-flex size-12 items-center justify-center rounded-2xl bg-zz-near font-display text-xl font-semibold text-zz-white shadow-sm"
           >
-            {busy ? "提交中…" : "注册"}
-          </button>
-        </form>
-        <p className="mt-6 text-center text-sm text-zz-muted">
-          已有账号？{" "}
-          <Link to="/login" state={location.state ?? undefined} className="text-zz-blue hover:underline">
-            去登录
-          </Link>
-        </p>
+            知
+          </span>
+          <h1 className="font-display text-3xl font-normal text-zz-black">注册控制台用户</h1>
+          <p className="text-sm leading-relaxed text-zz-muted">
+            在同一租户下同时设置<strong>登录用户名</strong>与<strong>邮箱</strong>；登录时任填其一即可。JWT 的{" "}
+            <span className="font-mono">sub</span> 仍为邮箱，便于审计。
+          </p>
+        </div>
+        <div className="zz-card px-7 py-7">
+          {!base ? (
+            <Banner kind="warn" className="mb-5">
+              当前未配置 API 地址。你可
+              <button type="button" className="zz-btn zz-btn-link mx-1" onClick={() => void skipRegister()}>
+                跳过注册直接进入演示租户
+              </button>
+              。
+            </Banner>
+          ) : null}
+          <form className="space-y-4" onSubmit={(ev) => void onSubmit(ev)}>
+            <Field label="租户 ID">
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={tenant}
+                  onChange={(ev) => setTenant(ev.target.value)}
+                  autoComplete="organization"
+                />
+              )}
+            </Field>
+            <Field label="登录用户名" hint={LOGIN_USERNAME_HINT} required>
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={username}
+                  onChange={(ev) => setUsername(ev.target.value)}
+                  placeholder="3–32 位小写，字母或数字开头，可含 _ -"
+                  autoComplete="off"
+                  required
+                />
+              )}
+            </Field>
+            <Field label="邮箱" required>
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  type="email"
+                  value={email}
+                  onChange={(ev) => setEmail(ev.target.value)}
+                  autoComplete="email"
+                  required
+                />
+              )}
+            </Field>
+            <Field label="密码（至少 8 位）" required>
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  type="password"
+                  value={password}
+                  onChange={(ev) => setPassword(ev.target.value)}
+                  autoComplete="new-password"
+                  minLength={8}
+                  required
+                />
+              )}
+            </Field>
+            <Field label="显示名（可选）">
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={displayName}
+                  onChange={(ev) => setDisplayName(ev.target.value)}
+                />
+              )}
+            </Field>
+            {err ? <Banner kind="error">{err}</Banner> : null}
+            <Button type="submit" variant="primary" size="md" fullWidth disabled={!base} isLoading={busy}>
+              {busy ? "提交中…" : "注册"}
+            </Button>
+          </form>
+          <p className="mt-6 text-center text-sm text-zz-muted">
+            已有账号？{" "}
+            <Link to="/login" state={location.state ?? undefined} className="text-zz-blue hover:underline">
+              去登录
+            </Link>
+          </p>
+        </div>
       </div>
     </div>
   );

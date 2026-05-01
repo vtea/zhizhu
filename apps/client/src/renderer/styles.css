@@ -1,0 +1,238 @@
+@import "tailwindcss";
+
+/*
+  与 apps/web/src/styles/index.css 同源的设计令牌与 @layer components；
+  两端共享同一组组件原语 class（短期重复，未来抽到 packages/ui 后由两端 import）。
+*/
+@source "./**/*.{ts,tsx}";
+
+@theme {
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-zz-black: #000000;
+  --color-zz-near: #212121;
+  --color-zz-deep: #17171c;
+  --color-zz-muted: #93939f;
+  --color-zz-border: #d9d9dd;
+  --color-zz-border-light: #e5e7eb;
+  --color-zz-snow: #fafafa;
+  --color-zz-card-border: #f2f2f2;
+  --color-zz-white: #ffffff;
+  --color-zz-blue: #1863dc;
+  --color-zz-blue-soft: #eaf1fd;
+  --color-zz-focus: #9b60aa;
+  --color-zz-danger: #b42318;
+  --color-zz-danger-soft: #fef2f2;
+  --color-zz-warn: #b54708;
+  --color-zz-warn-soft: #fffaeb;
+  --color-zz-success: #036a52;
+  --color-zz-success-soft: #ecfdf5;
+
+  --radius-signature: 22px;
+  --radius-control: 10px;
+  --radius-pill: 9999px;
+}
+
+@layer components {
+  .zz-shell-body {
+    @apply bg-zz-snow text-zz-near antialiased;
+    margin: 0;
+    font-family: var(--font-sans);
+  }
+  .zz-shell-root {
+    @apply mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-5 px-6 py-6;
+  }
+  .zz-shell-fallback {
+    @apply m-6 rounded-[var(--radius-control)] border border-red-200 bg-zz-danger-soft px-4 py-3 text-sm text-zz-danger;
+  }
+
+  .zz-btn {
+    @apply inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-pill)] border border-transparent text-sm font-medium leading-none whitespace-nowrap transition-colors duration-150 select-none;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zz-blue/40 focus-visible:ring-offset-1 focus-visible:ring-offset-zz-white;
+    @apply disabled:cursor-not-allowed disabled:opacity-55;
+  }
+  .zz-btn-sm {
+    @apply h-8 px-3 text-xs;
+  }
+  .zz-btn-md {
+    @apply h-10 px-4 text-sm;
+  }
+  .zz-btn-primary {
+    @apply bg-zz-black text-zz-white shadow-sm enabled:hover:bg-zz-deep;
+  }
+  .zz-btn-secondary {
+    @apply border-zz-border bg-zz-white text-zz-near shadow-sm enabled:hover:border-zz-blue/40 enabled:hover:text-zz-blue;
+  }
+  .zz-btn-danger {
+    @apply border-red-200 bg-zz-white text-zz-danger shadow-sm enabled:hover:bg-zz-danger-soft enabled:hover:border-zz-danger/40;
+  }
+  .zz-btn-ghost {
+    @apply border-transparent bg-transparent text-zz-near enabled:hover:bg-zz-snow enabled:hover:text-zz-near;
+  }
+  .zz-btn-link {
+    @apply h-auto rounded-none border-0 bg-transparent px-0 py-0 font-medium text-zz-blue enabled:hover:underline;
+  }
+  .zz-btn-block {
+    @apply w-full;
+  }
+  .zz-btn-spinner {
+    @apply mr-1 inline-block size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent;
+  }
+
+  .zz-input {
+    @apply w-full rounded-[var(--radius-control)] border border-zz-border bg-zz-white px-3 py-2 text-sm text-zz-near outline-none transition-colors duration-150 placeholder:text-zz-muted;
+    @apply hover:border-zz-blue/40 focus:border-zz-blue focus:ring-2 focus:ring-zz-blue/15;
+    @apply disabled:cursor-not-allowed disabled:bg-zz-snow disabled:text-zz-muted;
+  }
+  .zz-input-mono {
+    @apply font-mono;
+  }
+  .zz-input-error {
+    @apply border-zz-danger focus:border-zz-danger focus:ring-zz-danger/15;
+  }
+
+  .zz-field {
+    @apply flex flex-col gap-1.5;
+  }
+  .zz-field-label {
+    @apply flex items-baseline gap-1 text-sm font-medium text-zz-near;
+  }
+  .zz-field-label-required::after {
+    content: " *";
+    color: var(--color-zz-danger);
+    margin-left: 0.125rem;
+  }
+  .zz-field-required {
+    @apply text-zz-danger;
+  }
+  .zz-field-hint {
+    @apply text-xs leading-relaxed text-zz-muted;
+  }
+  .zz-field-error {
+    @apply text-xs font-medium leading-relaxed text-zz-danger;
+  }
+
+  .zz-card {
+    @apply rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white px-6 py-6 shadow-[0_1px_2px_0_rgb(0_0_0_/_0.04)];
+  }
+  .zz-card-flush {
+    @apply rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white;
+  }
+  .zz-section-title {
+    @apply text-base font-semibold tracking-tight text-zz-near;
+  }
+  .zz-section-subtitle {
+    @apply mt-1 text-sm leading-relaxed text-zz-muted;
+  }
+
+  .zz-banner {
+    @apply rounded-[var(--radius-control)] border px-3 py-2 text-sm leading-relaxed;
+  }
+  .zz-banner-content {
+    @apply min-w-0 w-full break-words;
+  }
+  .zz-banner-content code {
+    @apply break-all font-mono text-[0.8125rem];
+  }
+  .zz-banner-info {
+    @apply border-zz-border-light bg-zz-snow text-zz-near;
+  }
+  .zz-banner-ok {
+    @apply border-emerald-200 bg-zz-success-soft text-zz-success;
+  }
+  .zz-banner-warn {
+    @apply border-amber-200 bg-zz-warn-soft text-zz-warn;
+  }
+  .zz-banner-error {
+    @apply border-red-200 bg-zz-danger-soft text-zz-danger;
+  }
+
+  .zz-pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
+  }
+  .zz-pill-neutral {
+    @apply bg-zz-snow text-zz-near ring-1 ring-zz-border-light;
+  }
+  .zz-pill-info {
+    @apply bg-zz-blue-soft text-zz-blue;
+  }
+  .zz-pill-warn {
+    @apply bg-amber-100 text-amber-900;
+  }
+  .zz-pill-success {
+    @apply bg-zz-success-soft text-zz-success ring-1 ring-emerald-200;
+  }
+  .zz-pill-danger {
+    @apply bg-zz-danger-soft text-zz-danger ring-1 ring-red-200;
+  }
+
+  .zz-tabs {
+    @apply flex w-full min-w-0 max-w-full flex-wrap gap-1.5 sm:gap-2;
+  }
+  .zz-tab {
+    @apply inline-flex h-9 max-w-full min-w-0 cursor-pointer items-center rounded-[12px] border border-zz-border-light bg-zz-white px-2.5 text-xs font-medium text-zz-near transition-colors hover:border-zz-blue/40 hover:text-zz-blue sm:px-3.5 sm:text-sm;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zz-blue/40;
+  }
+  .zz-tab[aria-selected="true"] {
+    @apply border-transparent bg-zz-near text-zz-white shadow-sm hover:bg-zz-deep hover:text-zz-white;
+  }
+
+  .zz-mono-block {
+    @apply m-0 max-h-56 overflow-auto rounded-[var(--radius-control)] border border-zz-border-light bg-zz-snow/60 px-3 py-2.5 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-zz-near;
+  }
+
+  .zz-status-row {
+    @apply min-h-5 text-xs leading-relaxed;
+  }
+  .zz-status-row-info {
+    @apply text-zz-success;
+  }
+  .zz-status-row-error {
+    @apply font-semibold whitespace-pre-wrap text-zz-danger;
+  }
+
+  .zz-meta-line {
+    @apply text-xs leading-relaxed text-zz-muted;
+    word-break: break-all;
+  }
+  .zz-meta-bad {
+    @apply font-medium text-zz-danger;
+  }
+
+  .zz-log-panel {
+    @apply mt-3 overflow-hidden rounded-[var(--radius-control)] border border-zz-border-light bg-zz-white;
+  }
+  .zz-log-head {
+    @apply border-b border-zz-border-light bg-zz-snow px-3 py-1.5 text-xs text-zz-muted;
+  }
+  .zz-log-body {
+    @apply m-0 max-h-56 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed break-words whitespace-pre-wrap text-zz-near;
+  }
+
+  .zz-pw-card {
+    @apply rounded-[var(--radius-control)] border border-zz-border-light bg-zz-white px-4 py-3;
+  }
+  .zz-pw-card-title {
+    @apply text-sm font-semibold text-zz-near;
+  }
+}
+
+@layer base {
+  html {
+    @apply antialiased text-zz-near bg-zz-snow;
+    font-family: var(--font-sans);
+  }
+  h1,
+  h2,
+  .font-display {
+    font-family: var(--font-display);
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
+  }
+}

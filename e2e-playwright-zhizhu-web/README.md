@@ -5,7 +5,7 @@
 ## 先决条件
 
 1. **根目录** `.env`：已配 `DATABASE_URL` / `PG*`、`JWT_SECRET`；并执行过 `npm run migrate:api`（含控制台种子用户）。
-2. **apps/web/.env**：`VITE_API_BASE_URL` 指向本机 API，例如 `http://127.0.0.1:3000`（须与 CORS 一致，见 `apps/api` 说明）。
+2. **apps/web/.env**：`VITE_API_BASE_URL` 指向本机 API，例如 `http://127.0.0.1:3000`（须与 CORS 一致，见 `apps/api` 说明）。若要跑 **注册** 用例：根 `.env` 设 **`CONSOLE_ALLOW_PUBLIC_REGISTER=true`**，`apps/web/.env` 设 **`VITE_CONSOLE_PUBLIC_REGISTER=true`**（与 `npm run bootstrap:env` 默认一致）；否则 `01` 中注册用例会 **skip**。
 3. 两个进程已启动并可用：
    - `apps/api` 监听（默认 `3000`）
    - `apps/web` 开发服务默认 **5173**；被占用时 Vite 会改用 **5174/5175…**。`apps/api` 在根 `.env` **未**设 `CORS_STRICT=1` 时，会接受本机 `localhost` / `127.0.0.1` / `::1` 上**该端口**的 Origin。E2E 仍默认同测 `127.0.0.1:5173` 与 `localhost:5173` 两种入口；若你只在 5174 开前端，可设 `WEB_BASE_URL` / `E2E_WEB_URL` 为对应地址，且须保证 API 已同启。

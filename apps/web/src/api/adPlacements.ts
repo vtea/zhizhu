@@ -30,6 +30,7 @@ export type ListAdPlacementsQuery = {
   tenantId: string;
   page: number;
   pageSize: number;
+  dyLeadsEnterpriseId?: string | null;
 };
 
 export async function listAdPlacements(q: ListAdPlacementsQuery): Promise<Paginated<AdPlacementRow>> {
@@ -41,6 +42,9 @@ export async function listAdPlacements(q: ListAdPlacementsQuery): Promise<Pagina
     page: String(q.page),
     page_size: String(q.pageSize),
   });
+  if (q.dyLeadsEnterpriseId?.trim()) {
+    qs.set("dy_leads_enterprise_id", q.dyLeadsEnterpriseId.trim());
+  }
   return apiGetJson<Paginated<AdPlacementRow>>(
     `/api/v1/tenants/${encodeURIComponent(q.tenantId)}/ad-placements?${qs}`,
   );
@@ -89,8 +93,12 @@ export async function getVideoPlacementMetrics(
   tenantId: string,
   dyVideoId: string,
   platform = "douyin",
+  dyLeadsEnterpriseId?: string | null,
 ): Promise<VideoPlacementMetrics> {
   const qs = new URLSearchParams({ platform });
+  if (dyLeadsEnterpriseId?.trim()) {
+    qs.set("dy_leads_enterprise_id", dyLeadsEnterpriseId.trim());
+  }
   return apiGetJson(
     `/api/v1/tenants/${encodeURIComponent(tenantId)}/videos/${encodeURIComponent(dyVideoId)}/placement-metrics?${qs}`,
   );

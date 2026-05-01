@@ -2,11 +2,11 @@ import { PageHeader } from "@/components/PageHeader";
 import { useTenantId } from "@/hooks/useTenantId";
 import { useSession } from "@/hooks/useSession";
 import { segmentPillClass } from "@/lib/segmentPillClass";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { sessionCanManageTenantAdmin } from "@/lib/tenantConsoleAccess";
+import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 const TABS: { path: string; label: string; desc: string; platformAdminOnly?: boolean }[] = [
   { path: "organization", label: "组织与成员", desc: "部门、岗位、邀请与租户信息" },
-  { path: "tasks", label: "任务中心", desc: "编排、执行历史、客户端非敏感状态" },
   { path: "access", label: "平台用户与权限", desc: "角色分配与数据范围" },
   { path: "audit", label: "审计与导出", desc: "登录改权、导出申请等审计事件" },
   { path: "mail", label: "邮件", desc: "全站发信与 SMTP 部署环境（仅平台管理员）", platformAdminOnly: true },
@@ -26,7 +26,11 @@ function getSystemSettingsSubPath(pathname: string): string {
 
 export function SystemSettingsLayout() {
   const tenantId = useTenantId();
-  const platformAdmin = useSession()?.platformAdmin === true;
+  const session = useSession();
+  const platformAdmin = session?.platformAdmin === true;
+  if (!sessionCanManageTenantAdmin(session)) {
+    return <Navigate to={`/t/${encodeURIComponent(tenantId)}/dashboard`} replace />;
+  }
   const tabs = TABS.filter((t) => !t.platformAdminOnly || platformAdmin);
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -36,7 +40,6 @@ export function SystemSettingsLayout() {
     <div>
       <PageHeader
         title="系统设置"
-        description="租户侧：组织、任务、权限与审计等。全站发信与 SMTP 部署环境仅平台管理员在「邮件」中可见。设备与绑定码在侧栏「设备绑定」。"
       />
       <nav className="mb-6" aria-label="系统设置子页">
         <ul className="m-0 flex list-none flex-wrap gap-2 p-0">

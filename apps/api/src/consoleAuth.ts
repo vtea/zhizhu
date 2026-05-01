@@ -1,9 +1,11 @@
 import crypto from "node:crypto";
-import { poolQuery } from "./db.js";
-import { PLATFORM_ADMIN_ROLE, RESERVED_PLATFORM_TENANT_ID } from "./jwt.js";
+import type { QueryResult } from "pg";
+import { getPool, messageForBusinessError, poolQuery } from "./db.js";
+import { LEGACY_PLATFORM_TENANT_ID, PLATFORM_ADMIN_ROLE, RESERVED_PLATFORM_TENANT_ID } from "./jwt.js";
+import { assertTenantAllowsConsoleLogin, assertTenantAllowsNewConsoleUser } from "./tenantEntitlement.js";
 
-/** 历史保留名；现统一为 `RESERVED_PLATFORM_TENANT_ID`（`028` 会改库，登录侧仍兼容未迁移库） */
-const LEGACY_PLATFORM_TENANT_ID = "__platform__";
+/** `Pool` / `PoolClient`：控制台用户插入可在事务内复用 */
+export type PgQueryable = { query: (text: string, params?: unknown[]) => Promise<QueryResult> };
 
 const SCRYPT_OPTS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 } as const;
 
@@ -41,7 +43,7 @@ export function verifyPassword(password: string, saltHex: string, hashHex: strin
   }
 }
 
-function normEmail(e: string): string {
+export function normEmail(e: string): string {
   return e.trim().toLowerCase();
 }
 
@@ -74,8 +76,128 @@ function rolesFromRow(row: Record<string, unknown>): string[] {
 }
 
 /** 与控制台 URL / 会话一致：租户 slug 按小写存与查，避免注册 Demo、登录 demo 导致查无此人 */
-function normTenantId(t: string): string {
+export function normTenantId(t: string): string {
   return t.trim().toLowerCase();
+}
+
+/** 组织成员 `platform_role` → `biz_console_user.roles` */
+export function consoleRolesForOrgPlatformRole(platformRole: string): string[] {
+  if (platformRole.trim().toLowerCase() === "tenant_admin") {
+    return ["tenant_admin", "ad_placement:write"];
+  }
+  return ["ad_placement:write"];
+}
+
+function uniqueViolationConsoleUserMessage(e: unknown): string | null {
+  const err = e as { code?: string; constraint?: string; detail?: string };
+  if (err.code !== "23505") {
+    return null;
+  }
+  const c = String(err.constraint ?? "").toLowerCase();
+  const d = String(err.detail ?? "").toLowerCase();
+  if (c.includes("login_username") || d.includes("login_username")) {
+    return "该租户下用户名已注册";
+  }
+  if (c.includes("email") || d.includes("email")) {
+    return "该租户下邮箱已注册";
+  }
+  return "该租户下用户名或邮箱已存在";
+}
+
+/**
+ * 插入一行控制台用户（可经 Pool 或事务内 Client 调用）。
+ * @param roles 须非空；自助注册与迁移默认一致用 `tenant_admin` + `ad_placement:write`。
+ */
+export async function insertConsoleUser(
+  db: PgQueryable,
+  tenantId: string,
+  username: string,
+  email: string,
+  password: string,
+  displayName: string | null,
+  roles: string[],
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const tid = normTenantId(tenantId);
+  const { salt, hash } = makePasswordRecord(password);
+  try {
+    const r = await db.query(
+      `INSERT INTO biz_console_user (tenant_id, email, login_username, password_salt, password_hash, display_name, roles)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::text[])
+       RETURNING id::text AS id`,
+      [tid, email, username, salt, hash, displayName?.trim() || null, roles],
+    );
+    const id = (r.rows[0] as { id?: string }).id;
+    if (!id) {
+      return { ok: false, error: "注册失败" };
+    }
+    return { ok: true, id };
+  } catch (e) {
+    const u = uniqueViolationConsoleUserMessage(e);
+    if (u) {
+      return { ok: false, error: u };
+    }
+    return { ok: false, error: messageForBusinessError(e) };
+  }
+}
+
+/** 租户管理员重置控制台用户密码（无需旧密码） */
+export async function adminSetConsoleUserPassword(
+  db: PgQueryable,
+  tenantId: string,
+  consoleUserId: string,
+  newPassword: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const tid = normTenantId(tenantId);
+  if (!tid || !consoleUserId?.trim()) {
+    return { ok: false, error: "参数无效" };
+  }
+  if (!newPassword || newPassword.length < 8) {
+    return { ok: false, error: "新密码至少 8 位" };
+  }
+  const { salt, hash } = makePasswordRecord(newPassword);
+  try {
+    const r = await db.query(
+      `UPDATE biz_console_user SET password_salt = $1, password_hash = $2, updated_at = now()
+       WHERE id = $3::uuid AND lower(trim(tenant_id::text)) = lower(trim($4::text))`,
+      [salt, hash, consoleUserId.trim(), tid],
+    );
+    if ((r.rowCount ?? 0) < 1) {
+      return { ok: false, error: "未找到控制台用户" };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: messageForBusinessError(e) };
+  }
+}
+
+export async function adminUpdateConsoleUserEmail(
+  db: PgQueryable,
+  tenantId: string,
+  consoleUserId: string,
+  newEmailRaw: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const tid = normTenantId(tenantId);
+  const email = normEmail(newEmailRaw);
+  if (!tid || !consoleUserId?.trim() || !email || !email.includes("@")) {
+    return { ok: false, error: "邮箱无效" };
+  }
+  try {
+    const r = await db.query(
+      `UPDATE biz_console_user SET email = $1, updated_at = now()
+       WHERE id = $2::uuid AND lower(trim(tenant_id::text)) = lower(trim($3::text))`,
+      [email, consoleUserId.trim(), tid],
+    );
+    if ((r.rowCount ?? 0) < 1) {
+      return { ok: false, error: "未找到控制台用户" };
+    }
+    return { ok: true };
+  } catch (e) {
+    const u = uniqueViolationConsoleUserMessage(e);
+    if (u) {
+      return { ok: false, error: u };
+    }
+    return { ok: false, error: messageForBusinessError(e) };
+  }
 }
 
 export async function insertAuditEvent(
@@ -122,35 +244,61 @@ export async function registerConsoleUser(
   if (!password || password.length < 8) {
     return { ok: false, error: "密码至少 8 位" };
   }
-  const { salt, hash } = makePasswordRecord(password);
-  try {
-    const r = await poolQuery(
-      `INSERT INTO biz_console_user (tenant_id, email, login_username, password_salt, password_hash, display_name)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id::text AS id`,
-      [tid, email, username, salt, hash, displayName?.trim() || null],
-    );
-    const id = (r.rows[0] as { id?: string }).id;
-    if (!id) {
-      return { ok: false, error: "注册失败" };
-    }
-    await insertAuditEvent(tid, email, "console.register", "console_user", id, { login_username: username });
-    return { ok: true, id, login_username: username };
-  } catch (e) {
-    const err = e as { code?: string; constraint?: string; detail?: string };
-    if (err.code === "23505") {
-      const c = String(err.constraint ?? "").toLowerCase();
-      const d = String(err.detail ?? "").toLowerCase();
-      if (c.includes("login_username") || d.includes("login_username")) {
-        return { ok: false, error: "该租户下用户名已注册" };
-      }
-      if (c.includes("email") || d.includes("email")) {
-        return { ok: false, error: "该租户下邮箱已注册" };
-      }
-      return { ok: false, error: "该租户下用户名或邮箱已存在" };
-    }
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  const gate = await assertTenantAllowsNewConsoleUser(tid);
+  if (!gate.ok) {
+    return gate;
   }
+  const ins = await insertConsoleUser(getPool(), tid, username, email, password, displayName, [
+    "tenant_admin",
+    "ad_placement:write",
+  ]);
+  if (!ins.ok) {
+    return ins;
+  }
+  await insertAuditEvent(tid, email, "console.register", "console_user", ins.id, { login_username: username });
+  return { ok: true, id: ins.id, login_username: username };
+}
+
+export async function changeConsoleUserPassword(
+  tenantId: string,
+  emailFromJwtSub: string,
+  oldPassword: string,
+  newPassword: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const tid = normTenantId(tenantId);
+  const email = normEmail(emailFromJwtSub);
+  if (!tid || !email) {
+    return { ok: false, error: "会话无效" };
+  }
+  if (!oldPassword || !newPassword) {
+    return { ok: false, error: "旧密码与新密码必填" };
+  }
+  if (newPassword.length < 8) {
+    return { ok: false, error: "新密码至少 8 位" };
+  }
+  const row = await findConsoleUserRow(tid, email);
+  if (!row) {
+    return { ok: false, error: "未找到控制台用户" };
+  }
+  const salt = String(row.password_salt ?? "");
+  const hash = String(row.password_hash ?? "");
+  if (!verifyPassword(oldPassword, salt, hash)) {
+    return { ok: false, error: "当前密码错误" };
+  }
+  const { salt: newSalt, hash: newHash } = makePasswordRecord(newPassword);
+  const id = String(row.id ?? "");
+  const tenantRow = String(row.tenant_id ?? tid);
+  try {
+    await poolQuery(
+      `UPDATE biz_console_user SET password_salt = $1, password_hash = $2, updated_at = now()
+       WHERE id = $3::uuid AND tenant_id = $4`,
+      [newSalt, newHash, id, tenantRow],
+    );
+  } catch (e) {
+    return { ok: false, error: messageForBusinessError(e) };
+  }
+  await insertAuditEvent(tid, email, "console.password_change", "console_user", id, {});
+  return { ok: true };
 }
 
 export async function loginConsoleUser(
@@ -186,6 +334,10 @@ export async function loginConsoleUser(
   /** 会话与 JWT 一律用新名，避免已登录态仍带历史 id */
   const sessionTid =
     dbTenant.toLowerCase() === LEGACY_PLATFORM_TENANT_ID.toLowerCase() ? RESERVED_PLATFORM_TENANT_ID : dbTenant;
+  const gate = await assertTenantAllowsConsoleLogin(sessionTid);
+  if (!gate.ok) {
+    return { ok: false, error: gate.error };
+  }
   const roles = rolesFromRow(row);
   const fallbackRoles =
     sessionTid === RESERVED_PLATFORM_TENANT_ID ? [PLATFORM_ADMIN_ROLE] : ["tenant_admin", "ad_placement:write"];

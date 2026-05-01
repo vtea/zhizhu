@@ -4,6 +4,8 @@ export type AnalyticsFilters = {
   /** ISO 日期 YYYY-MM-DD，含当天区间端点由调用方解释 */
   from: string | null;
   to: string | null;
+  /** 控制台顶栏主体筛选；不入 URL，仅 API / mock 聚合用 */
+  dyLeadsEnterpriseId?: string | null;
 };
 
 export function parseYmd(raw: string | null): string | null {

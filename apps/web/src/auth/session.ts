@@ -1,3 +1,8 @@
+import {
+  isPlatformReservedTenantSlug,
+  sessionHasPlatformAdminRole,
+} from "./platformScope";
+
 const STORAGE_KEY = "zhizhu.session.v1";
 
 const SESSION_CHANGE_EVENT = "zhizhu:session-changed";
@@ -30,9 +35,9 @@ export type SessionPayload = {
   loginUsername?: string;
   /** 配置 JWT_SECRET 时由登录换票写入，用于 Authorization */
   accessToken?: string;
-  /** 登录接口返回的 roles；含 platform_admin 时可切换任意租户控制台 */
+  /** 登录接口返回的 roles */
   roles?: string[];
-  /** 由 roles 派生，便于路由守卫 */
+  /** 与会话 `tenantId` + `roles` 派生：须为平台保留租户且含 platform_admin（与 API `isPlatformAdminSession` 一致） */
   platformAdmin?: boolean;
 };
 
@@ -62,7 +67,8 @@ export function getSession(): SessionPayload | null {
     const accessToken = parsed.accessToken;
     const rolesRaw = parsed.roles;
     const roles = Array.isArray(rolesRaw) ? rolesRaw.filter((x): x is string => typeof x === "string") : undefined;
-    const platformAdmin = parsed.platformAdmin === true;
+    const platformAdmin =
+      isPlatformReservedTenantSlug(tenantId) && sessionHasPlatformAdminRole(roles);
     return {
       tenantId,
       displayName:
@@ -74,7 +80,7 @@ export function getSession(): SessionPayload | null {
           : undefined,
       accessToken: typeof accessToken === "string" && accessToken.length > 0 ? accessToken : undefined,
       roles: roles && roles.length > 0 ? roles : undefined,
-      platformAdmin: platformAdmin || (roles?.includes("platform_admin") ?? false),
+      platformAdmin,
     };
   } catch {
     return null;

@@ -115,7 +115,7 @@ INSERT INTO biz_task (
 ) VALUES (
   'f0000001-0000-4000-8000-000000000401'::uuid,
   'demo', 'dev-mac-001', 'ent-001', '7312345678901234567',
-  'success',
+  'succeeded',
   '{"date_range": "last_7d"}'::jsonb,
   '{"rows": 42}'::jsonb
 );

@@ -7,20 +7,67 @@
   "main": "dist/main.js",
   "scripts": {
     "build:client": "npm run build",
-    "build": "tsc -p tsconfig.json && npm run build:renderer",
-    "build:renderer": "esbuild src/renderer.ts --bundle --format=iife --platform=browser --outfile=dist/renderer.js --sourcemap",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && npm run build:css && npm run build:renderer",
+    "build:css": "tailwindcss -i src/renderer/styles.css -o dist/styles.css --minify",
+    "build:renderer": "esbuild src/renderer/main.tsx --bundle --format=iife --platform=browser --outfile=dist/renderer.js --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --sourcemap",
     "watch": "tsc -p tsconfig.json -w",
-    "watch:renderer": "esbuild src/renderer.ts --bundle --format=iife --platform=browser --outfile=dist/renderer.js --sourcemap --watch",
+    "watch:css": "tailwindcss -i src/renderer/styles.css -o dist/styles.css --watch",
+    "watch:renderer": "esbuild src/renderer/main.tsx --bundle --format=iife --platform=browser --outfile=dist/renderer.js --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --sourcemap --watch",
     "start": "npm run build && electron .",
-    "dev": "npm run start"
+    "dev": "npm run start",
+    "pack:mac": "npm run build && electron-builder --mac dmg --publish never",
+    "pack:win": "npm run build && electron-builder --win nsis --publish never",
+    "pack:all": "npm run build && electron-builder --mac dmg --win nsis --publish never"
   },
   "dependencies": {
-    "dotenv": "^16.4.7"
+    "@zhizhu/playwright-shell-contract": "*",
+    "@zhizhu/playwright-rule-schema": "*",
+    "@zhizhu/runner": "0.1.0",
+    "dotenv": "^16.4.7",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.1.4",
     "@types/node": "^22.10.0",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
     "electron": "^35.7.5",
+    "electron-builder": "^24.13.3",
     "esbuild": "^0.25.2",
+    "tailwindcss": "^4.1.4",
     "typescript": "~5.8.0"
+  },
+  "build": {
+    "appId": "com.zhizhu.client",
+    "productName": "知竹",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "index.html",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "identity": null
+    },
+    "dmg": {
+      "sign": false
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

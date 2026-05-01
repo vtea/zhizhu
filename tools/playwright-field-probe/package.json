@@ -2,6 +2,10 @@
   "name": "playwright-field-probe",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@zhizhu/playwright-browser-fingerprint": "*",
+    "@zhizhu/playwright-shell-contract": "*"
+  },
   "scripts": {
     "postinstall": "playwright install chromium",
     "login": "tsx src/login.ts",
@@ -14,12 +18,13 @@
     "probe:headed": "tsx src/probe.ts --headed",
     "probe:persistent:headed": "tsx src/probe.ts --persistent --headed",
     "probe:anonymous": "tsx src/probe.ts --anonymous",
+    "probe:douyin-short": "tsx src/douyinShortUrlProbe.ts",
     "dump-menu-keys": "tsx src/dump-menu-keys.ts",
     "probe:verify:clue-tabs": "sh scripts/verify-clue-list-tabs.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "playwright": "1.49.0",
+    "playwright": "^1.59.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

@@ -1,0 +1,18 @@
+{
+  "name": "@zhizhu/playwright-rule-schema",
+  "private": true,
+  "version": "0.1.0",
+  "description": "知竹：自动化规则 DSL 类型 + 浅校验，客户端编辑器与 Runner 解释器、API 上传校验共用",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test src/index.test.ts",
+    "postinstall": "node -e \"const cp=require('node:child_process');const hasTsc=(()=>{try{return !!require.resolve('typescript/bin/tsc')}catch{return false}})();if(!hasTsc){console.log('[playwright-rule-schema] skip build: typescript not installed');process.exit(0);}cp.execSync('npm run build',{stdio:'inherit'});\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "~5.8.0"
+  }
+}

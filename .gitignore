@@ -1,13 +1,17 @@
 .DS_Store
 **/._*
+.AppleDouble
+__MACOSX/
 .env
 .env.local
 .env.*.local
 !.env.example
 node_modules/
-apps/web/dist/
-apps/client/dist/
-apps/api/dist/
+apps/*/dist/
+packages/*/dist/
+
+# 视频封面本地落盘（租户-账户-视频 目录），勿提交二进制
+storage/video-covers/
 
 # Playwright 字段探测（登录态与抓包输出，勿提交）
 tools/playwright-field-probe/.auth/

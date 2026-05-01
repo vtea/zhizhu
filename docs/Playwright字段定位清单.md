@@ -1,6 +1,6 @@
 # Playwright 字段定位清单（登录线索版后逐项补齐）
 
-| 文档版本 | v0.18 |
+| 文档版本 | v0.20 |
 |----------|------|
 | 用途 | 登录 **[抖音企业号线索版](https://leads.cluerich.com/)** 后，整理「**每条 PG 字段从哪里来**」；填完再同步到 **`数据字典-*.md` §6/§7** 与 **`脱敏白名单-上云字段.md`** |
 | 工具 | 仓库 **`tools/playwright-field-probe/`**（`npm run probe` → **`.out/captured-json.ndjson`**；无登录可先 `npm run probe:anonymous`）+ 浏览器 **Network** 面板 |
@@ -165,6 +165,7 @@
 | `dy_video_id` | **P6** 列表/详情 XHR；**或** 公网解析 | **BFF**：入口 **§1 P6**；`menu_key` **`EAwemeManage` / `EAccountAwemeData`**；`probe:persistent`。**公网**：**`?modal_id=`** 与 **`/video/{id}`** 取**同一** 数字，与 BFF 行对账；见 上 段 与 **§0.2 T08** |
 | `dy_title` | 同上 | 同上 |
 | `dy_cover_url` | 同上 | 同上 |
+| `dy_video_url` | 同上 | 同上 |
 | `dy_duration_sec` | 同上 | 同上 |
 | `dy_publish_at` | 同上 | 同上 |
 | `dy_play_count` | 同上 | 同上 |
@@ -187,11 +188,11 @@
 | `dy_lead_wlz_id` / `dy_lead_ylz_id` | 列表 XHR | 同上 → **`clueId`**；未留资 **→ wlz**、已留资 **→ ylz** | **T04 关**；与 **`lead_stage`** 一致去重/合并 见 字典 **§3.1** |
 | `lead_stage` | **DOM** + 列表 query | **§1.1** `data-log-name`；**请求**中 `queryIntentionUserFields` 的 **`hasClue`**：本机 **`1`→`converted`（已留资）**、**`2`→`no_conversion`（未留资）** | 以 DOM 为操作真源、接口为校验 |
 | `dy_last_interaction_at` | 列表 XHR | 同上 → **`$.data.intentionUserList[*].actionTimeMs`**（毫秒时间戳，转 `timestamptz`） | 与规则「最近互动时间」口径；详情若有差异再对账 |
-| `dy_last_interaction_summary` | 列表 XHR | 同上 → **`$.data.intentionUserList[*].actionDesc`** | 脱敏见白名单 |
-| `dy_avatar_url` | 列表 XHR | 同上 → **`$.data.intentionUserList[*].avatar`** | |
+| ~~`dy_last_interaction_summary`~~ | — | 原 → `actionDesc` | **2026-04-29 弃采**：不再入库 |
+| ~~`dy_avatar_url`~~ | — | 原 → `avatar` | **2026-04-29 弃采**：不再入库 |
 | `dy_nickname` | 列表 XHR | 同上 → **`$.data.intentionUserList[*].userName`** | |
 | `dy_unique_id`（线索**用户**的展示号） | 列表 XHR + UI | 同上 → **`$.data.intentionUserList[*].douyinId`** 等；与 **「用户名片」里「抖音号:」** 一列、指 **C 端**留资用户，**非** **「来源:」** 我方号 | 不等于 **wlz/ylz 业务主键**；与 **§1.1 用户名片** 一致 |
-| `dy_region` | 列表 XHR | 同上 → **`$.data.intentionUserList[*].cityName`** / `cityCode` | |
+| ~~`dy_region`~~ | — | 原 → `cityName`/`cityCode` | **2026-04-29 弃采**：不再入库 |
 | `dy_intent_level` | — | **首版不采**（**T05 已废**） | 分档**仅** **`lead_stage` / Tab / wlz·ylz**；后台「用户等级」**界面** 可**忽略** 不入 PG |
 | `owner_user_id` / `source_operator_user_id` | — | **首版不采**（**T06 已废**） | 线索**仅** wlz/ylz + `account_id` + 名片/互动等；不关联本系统「负责人」 |
 | `dy_leads_enterprise_id` | **P1** 同源 | `GET .../bff/account`（**§2**） | 行内若无主体则回退 BFF |
@@ -209,6 +210,88 @@
 | 矩阵企业员工号入口 | `matrix_tab` | **`EnterpriseSelfEmployee`**；**§1 P2** URL |
 | 翻页结束条件 | `page_size` / `pageNo` 等 | 列表 **`pageNo` / `pageSize`** 见 **§1.1** URL 参数；总条数 **`$.data.total`** | |
 | 列表行主键（用于去重） | 与 **wlz / ylz** 分 Tab 落列 | **`clueId`**，见 **§6、§0.2 T04**；**`lead_stage` / `hasClue` 对列** | |
+
+### 7.1 抖音 Web 公网（`www.douyin.com`）：规则可用 `captureResponse` + `json_path`
+
+> **前提**：知竹 Runner 的 `json_path` 为**简化路径**（见 [`packages/playwright-rule-schema`](../packages/playwright-rule-schema/src/index.ts) / [`extractJsonPath`](../apps/runner/src/ruleRunner/capture.ts)）：仅 `a.b.c` 与段内 `url_list[0]` 这种**下标**，**无**通用 JSONPath 表达式。  
+> **工具**：`tools/playwright-field-probe` · `npm run probe:anonymous` · **`npm run probe:douyin-short`**；原始包见 **`.out/captured-json.ndjson`**（**勿**提交 Git）。  
+> **指纹**：须走 `@zhizhu/playwright-browser-fingerprint`（与 field-probe 一致），否则计数/结构可能与真机不一致。
+
+#### A. 单视频页：作品详情 XHR（主推荐）
+
+页面：`https://www.douyin.com/video/{dy_video_id}`（或用户页弹层带 `modal_id`，主键仍建议对成 **同一** `dy_video_id`，见 **`数据字典-视频.md` §2.1**）。
+
+| 业务含义 | 落入 `biz_video` 等 | `captureResponse.url_pattern`（子串即可） | `json_path`（相对**该响应 JSON 根对象**） | 备注 |
+|----------|---------------------|------------------------------------------|--------------------------------------------|------|
+| 视频主键 | `dy_video_id` | `/aweme/v1/web/aweme/detail/` | `aweme_detail.aweme_id` | 与地址栏 `/video/{id}` 一致 |
+| 标题 / 文案（含 `#话题#`） | `dy_title` | 同上 | `aweme_detail.desc` | |
+| 发布时间 | `dy_publish_at` | 同上 | `aweme_detail.create_time` | **Unix 秒**（整数）；入库转 `timestamptz` 时按秒解析 |
+| 点赞数 | `dy_like_count` | 同上 | `aweme_detail.statistics.digg_count` | 抖音对「赞」的字段名为 **`digg_count`** |
+| 评论数 | `dy_comment_count` | 同上 | `aweme_detail.statistics.comment_count` | |
+| 收藏数 | `dy_favorite_count` | 同上 | `aweme_detail.statistics.collect_count` | |
+| 分享数 | `dy_share_count` | 同上 | `aweme_detail.statistics.share_count` | |
+| 播放量 | `dy_play_count` | 同上 | `aweme_detail.statistics.play_count` | |
+| 封面图 URL | `dy_cover_url` | 同上 | `aweme_detail.video.cover.url_list[0]` | 多为**带签名**的 CDN，有时效；作展示快照即可 |
+| 规范视频页 URL | `dy_video_url` | — | （不入 detail）建议拼接 `https://www.douyin.com/video/` + `aweme_detail.aweme_id` | 短链见 **B** |
+
+**说明（计数）**：匿名 / 未登录 / 风控下 **`statistics` 内计数可能全为 `0`**；持久 profile **登录抖音 Web** 后宜再对账；若 detail 仍为空，可并列监听其它接口（如部分环境下另有统计类请求），以现网 Network 为准。
+
+**规则示例片段**（`key` 自定；`url_pattern` 勿写死完整 query，避免 `a_bogus` 变更导致匹配失败）：
+
+```json
+{
+  "type": "captureResponse",
+  "url_pattern": "/aweme/v1/web/aweme/detail/",
+  "key": "douyin_aweme_detail"
+}
+```
+
+多条 `detail` 时（重试/预加载），可在 mapping 入库阶段以**最后一次**或**首个非空 statistics** 为准，与产品约定即可。
+
+#### B. 短链 `v.douyin.com/...`：解析规范视频 ID 与文案线索
+
+| 业务含义 | `url_pattern` | `json_path` / 用法 | 备注 |
+|----------|---------------|-------------------|------|
+| 多条「候选」`/video/{id}` + 文案 `anchor` | `/aweme/v1/web/seo/inner/link/` | **不建议**单一路径写死：响应为 **`link_data[]` 嵌套数组**，且混有**推荐视频** | 规则层可 **`captureResponse` 不设 `json_path` 抓整包**，由 **`mapping` / 入库代码** 遍历 `link_data[*].link_list[*]`，按 **`link_type` + `anchor`** 选当前分享（探测中 **`link_type=760`** 曾出现于「当前分享」位，**非**每次响应都有，须线上再固化） |
+| 仅标题线索 | 同上 | `link_list[].anchor` 与 `link_list[].url` 成对出现 | 与 **A** 的 `desc` 对账 |
+
+短链工具脚本：**`tools/playwright-field-probe`** → **`npm run probe:douyin-short -- 'https://v.douyin.com/...'`**。
+
+#### C. 不推荐：`collectTable` 扫 DOM
+
+抖音 PC 页结构、`data-testid` 变更频繁；**优先 A/B XHR**。若必须 DOM，须自建 **§0** 所述 **role / testid / css** 选择器并由人工作业对账，**不**写入本表作稳定契约。
+
+### 7.2 抖音 `aweme/detail` 与 `biz_video`、控制台「视频管理」对账
+
+> **表结构**：[`apps/api/migrations/005_biz_video.sql`](../apps/api/migrations/005_biz_video.sql)  
+> **列表/推荐 API 返回列**：[`apps/api/src/tenantApi.ts`](../apps/api/src/tenantApi.ts)（`listVideos` 查询中的 `v.dy_*`）  
+> **Web 视频管理页**：[`apps/web/src/pages/VideosPage.tsx`](../apps/web/src/pages/VideosPage.tsx) 表格列 `VIDEO_COLUMNS_BASE`、编辑弹窗 `patchVideo` 入参  
+> **管理员 PATCH 可改字段**：[`apps/api/src/consoleWrites.ts`](../apps/api/src/consoleWrites.ts) `patchVideoMeta`（仅列出的键）  
+> **离线新建占位**：同文件 `createVideoOffline`（计数类列插入为 `NULL`，由后续同步补）
+
+| `biz_video` 列 | 抖音 PC `.../aweme/v1/web/aweme/detail/`（§7.1 `json_path`） | 能匹配 | 列表 API 有 | 视频管理**表格**展示 | 视频管理**编辑元数据**可 PATCH | 说明 |
+|----------------|---------------------------------------------------------------|--------|------------|----------------------|--------------------------------|------|
+| `dy_video_id` | `aweme_detail.aweme_id` | 是 | 是 | 深链筛选 / 操作键 | — | 与 `/video/{id}` 一致 |
+| `dy_title` | `aweme_detail.desc` | 是 | 是 | 列「标题」 | 是 | 含话题 `#` |
+| `dy_cover_url` | `aweme_detail.video.cover.url_list[0]` | 是 | 是 | 列「封面」 | 是 | 多为签名 CDN，有时效 |
+| `dy_video_url` | （规则层拼接）`https://www.douyin.com/video/` + `aweme_id` | 是 | 是 | 编辑内字段 | 是 | detail 体不唯一对应「分享短链」 |
+| `dy_duration_sec` | `aweme_detail.duration`（或 `aweme_detail.video.duration`） | 是* | 是 | **未**单独列表格 | **否** | 实测值为**毫秒**级时长时，入库需 `/1000` 转秒并取整；两字段同值时对账其一即可 |
+| `dy_publish_at` | `aweme_detail.create_time` | 是* | 是 | 列「发布时间」 | **否** | Unix **秒** → `timestamptz`；匿名/风控下可能异常，须登录态再验 |
+| `dy_play_count` | `aweme_detail.statistics.play_count` | 是* | 是 | 列「播放量」 | 是 | 匿名时可能为 0 |
+| `dy_like_count` | `aweme_detail.statistics.digg_count` | 是* | 是 | **否**（未做列） | **否** | DB 有、API 有；**控制台表格与 PATCH 均未暴露**，推荐算法仍用（`listRecommendedVideos`） |
+| `dy_comment_count` | `aweme_detail.statistics.comment_count` | 是* | 是 | **否** | **否** | 同上 |
+| `dy_favorite_count` | `aweme_detail.statistics.collect_count` | 是* | 是 | **否** | **否** | 抖音字段名 collect → PG `dy_favorite_count` |
+| `dy_share_count` | `aweme_detail.statistics.share_count` | 是* | 是 | **否** | **否** | 同上 |
+| `dy_completion_rate` | （detail 首包**未**稳定见） | **否**/另源 | 是 | 列「完播率」 | 是 | 须 **企业号线索版 / 矩阵 BFF** 或其它接口另抓（**§1 P6、T08**）；非 C 端 `aweme/detail` 契约 |
+| `dy_lead_count` | 无 | **否** | 是 | 列「线索量」 | 是 | **业务指标**，非抖音 Web 公网作品 JSON |
+| `metric_synced_at` | 无 | **否** | 是 | 列「指标同步」 | 是 | **本系统**写入同步批次时间 |
+| `account_id` | 无（任务/作者侧另对账） | **否** | 是 | 列「账号」 | — | 须与下发任务的 `account_id` 或作者 `sec_uid` 与 `biz_account` 映射一致，**勿**单靠 detail |
+| `dy_leads_enterprise_id` | 无 | **否** | 是 | 主体筛选 | — | 来自 `biz_account` 行 |
+| `platform` | — | — | 是 | — | — | 默认 `douyin` |
+
+\* **「能匹配」**：字段语义对齐；**计数**在未登录/风控下可能全 0，以持久 profile 登录抖音 Web 后的样例为准。
+
+**小结**：标题、封面、规范视频 URL、时长、发布时间、播放、赞、评、藏、分享均可从 **`aweme/detail`** 映射进 **`biz_video`**；**视频管理页表格**当前只展示其中一部分（**赞评藏分享**在 PG 有但 UI 未列）；**编辑元数据**仅支持改 `patchVideoMeta` 列出的子集，**不含**赞评藏分享与发布时间。**完播率 / 线索量** 不是该公网接口的稳定来源。
 
 ---
 
@@ -244,3 +327,5 @@
 | v0.16 | 2026-04-25 | **§1.1**：`biz_account` **手动** 更**为主**、**来源** 缺**自动** 拉、**不匹** **提示**；与 **`数据字典-线索` v0.14**、**`数据字典-员工账号` v0.7** 同步 |
 | v0.17 | 2026-04-25 | **§5、§0.2 T08**：**公网** **`modal_id` / `/video/{id}`** 与 **P6 BFF** **dy_video_id** 对账；**`数据字典-视频` v0.4 §2.1** 双链 |
 | v0.18 | 2026-04-25 | **§0.2 T09、§4**：`dy_ad_*` 为 **B/C**；**A** 人填 见 **`数据字典-视频投放-示意.md`**；**P7=可选** 对 账，**不** 阻塞 A；与 **`数据字典-员工账号` v0.8** 对读 |
+| v0.19 | 2026-04-30 | **§7.1**：抖音公网 **`aweme/detail`** 与短链 **`seo/inner/link`** 的 **`captureResponse` + `json_path`**；标题/时间/赞评藏转/播放/封面；计数匿名可能为 0；**`probe:douyin-short`** |
+| v0.20 | 2026-04-30 | **§7.2**：`aweme/detail` ↔ **`biz_video`** ↔ **`VideosPage`** ↔ **`patchVideoMeta`** 对账表（UI 未展示赞评藏分享但 DB/API 有） |

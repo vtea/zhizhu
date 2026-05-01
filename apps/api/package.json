@@ -10,15 +10,21 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "migrate": "tsx src/migrate.ts",
+    "migrate:api": "tsx src/migrate.ts",
+    "test": "tsx --test src/deviceJwt.contract.test.ts src/playwrightShellContract.contract.test.ts src/dbErrorClassify.contract.test.ts src/automationRuleDraftSync.contract.test.ts src/consoleAuthPassword.contract.test.ts src/tenantEntitlement.unit.test.ts src/enterpriseScopePick.contract.test.ts src/fileRuleIngestDispatch.contract.test.ts src/consoleWrites.skipDetails.unit.test.ts src/bizVideoIngestNormalize.unit.test.ts",
     "verify:login": "bash scripts/verify-platform-login.sh"
   },
   "dependencies": {
+    "@zhizhu/playwright-shell-contract": "*",
+    "@zhizhu/playwright-rule-schema": "*",
     "@types/ws": "^8.18.1",
     "dotenv": "^16.4.7",
+    "nodemailer": "^6.9.16",
     "pg": "^8.14.1",
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@types/nodemailer": "^6.4.17",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.11",
     "tsx": "^4.19.2",

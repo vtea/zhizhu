@@ -1,0 +1,22 @@
+{
+  "target": "employee_personal_auth",
+  "idempotency_keys": [
+    "tenant_id",
+    "platform",
+    "account_kind",
+    "dy_unique_id"
+  ],
+  "defaults": {
+    "platform": "douyin",
+    "account_kind": "personal_authorized"
+  },
+  "field_map": {
+    "account_id": "account_id",
+    "dy_display_name": "dy_display_name",
+    "dy_unique_id": "dy_unique_id",
+    "dy_user_url": "dy_user_url",
+    "auth_status": "auth_status",
+    "authorized_at_text": "authorized_at_raw",
+    "expires_at_text": "expires_at_raw"
+  }
+}

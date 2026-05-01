@@ -12,9 +12,12 @@ test.describe("知竹 Web：平台租户管理", () => {
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/tenant-management/);
     await expect(page.getByRole("heading", { name: "租户管理" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "新建租户登记" })).toBeVisible();
+    await expect(page.getByRole("table")).toBeVisible();
+
+    await page.getByRole("button", { name: "新建租户登记" }).click();
     await expect(page.getByRole("heading", { name: "登记新租户" })).toBeVisible();
     await expect(page.getByPlaceholder(/例如 nawan/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "登记租户" })).toBeVisible();
-    await expect(page.getByRole("table")).toBeVisible();
+    await expect(page.getByRole("button", { name: "确认登记" })).toBeVisible();
   });
 });

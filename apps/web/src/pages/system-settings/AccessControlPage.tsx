@@ -1,5 +1,6 @@
 import { DataTable, type DataColumn } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
+import { Banner, Button, Field, OverlaySectionCard, SelectInput, TextInput } from "@/components/ui";
 import { assignRbacRole, listRbacAssignments, removeRbacAssignment, type RbacRow } from "@/api/consoleExtras";
 import { getApiBaseUrl } from "@/api/env";
 import { useTenantId } from "@/hooks/useTenantId";
@@ -25,6 +26,7 @@ export function AccessControlPage() {
   const [subjectId, setSubjectId] = useState("");
   const [roleName, setRoleName] = useState("ad_placement:write");
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
 
   const rbacQ = useQuery({
     queryKey: ["rbac", tenantId],
@@ -37,6 +39,7 @@ export function AccessControlPage() {
     onSuccess: async () => {
       setBanner({ kind: "ok", text: "角色已分配（若已存在则幂等）。" });
       setSubjectId("");
+      setAssignModalOpen(false);
       await qc.invalidateQueries({ queryKey: ["rbac", tenantId] });
       await qc.invalidateQueries({ queryKey: ["audit-events", tenantId] });
     },
@@ -74,9 +77,9 @@ export function AccessControlPage() {
       header: "操作",
       cell: (r) =>
         api ? (
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center justify-center rounded-full border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 shadow-sm transition hover:bg-red-50 disabled:opacity-50"
+          <Button
+            variant="danger"
+            size="sm"
             disabled={delMut.isPending && delMut.variables === r.id}
             onClick={() => {
               if (confirm("确定撤销该条角色分配？")) {
@@ -85,7 +88,7 @@ export function AccessControlPage() {
             }}
           >
             撤销
-          </button>
+          </Button>
         ) : null,
     },
   ];
@@ -105,51 +108,61 @@ export function AccessControlPage() {
       <PageHeader
         titleAs="h2"
         title="访问控制"
-        description="为平台用户分配或撤销功能角色；需具备租户管理员权限。投放类写操作会额外校验「投放管理」写权限。"
       />
       {!api ? (
-        <p className="rounded-lg border border-zz-border-light bg-zz-snow/40 px-4 py-3 text-sm text-zz-muted">
-          请配置控制台接口并登录，登录令牌中将携带本页所分配角色。
-        </p>
+        <Banner kind="info">请配置控制台接口并登录，登录令牌中将携带本页所分配角色。</Banner>
       ) : rbacQ.isError ? (
-        <p className="text-sm text-red-700">加载失败：{formatQueryError(rbacQ.error, "加载失败")}</p>
+        <Banner kind="error">加载失败：{formatQueryError(rbacQ.error, "加载失败")}</Banner>
       ) : (
         <>
-          {banner ? (
-            <p className={`text-sm ${banner.kind === "err" ? "text-red-700" : "text-zz-blue"}`}>{banner.text}</p>
-          ) : null}
-          <section className="max-w-xl rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-6">
-            <h2 className="text-sm font-semibold text-zz-near">分配角色</h2>
-            <form className="mt-4 space-y-3" onSubmit={(ev) => onAssign(ev)}>
-              <label className="block text-sm">
-                用户标识（邮箱或系统内唯一主体 ID）
-                <input
-                  className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 font-mono text-sm"
-                  value={subjectId}
-                  onChange={(ev) => setSubjectId(ev.target.value)}
-                  placeholder="user@example.com"
-                />
-              </label>
-              <label className="block text-sm">
-                系统角色
-                <select
-                  className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 font-mono text-sm"
-                  value={roleName}
-                  onChange={(ev) => setRoleName(ev.target.value)}
-                >
-                  <option value="tenant_admin">租户管理员</option>
-                  <option value="ad_placement:write">投放管理-写</option>
-                </select>
-              </label>
-              <button
-                type="submit"
-                disabled={assignMut.isPending}
-                className="rounded-full bg-zz-black px-4 py-2 text-sm text-white disabled:opacity-50"
-              >
+          {banner ? <Banner kind={banner.kind === "err" ? "error" : "info"}>{banner.text}</Banner> : null}
+          <div className="flex flex-wrap justify-end">
+            <Button variant="secondary" size="md" onClick={() => setAssignModalOpen(true)}>
+              分配角色
+            </Button>
+          </div>
+          <OverlaySectionCard
+            open={assignModalOpen}
+            onClose={() => {
+              setBanner(null);
+              setAssignModalOpen(false);
+            }}
+            title="分配角色"
+            titleAs="h2"
+            className="max-w-xl"
+          >
+            <form className="space-y-4" onSubmit={(ev) => onAssign(ev)}>
+              <Field label="用户标识（邮箱或系统内唯一主体 ID）">
+                {({ id, describedBy }) => (
+                  <TextInput
+                    id={id}
+                    aria-describedby={describedBy}
+                    mono
+                    value={subjectId}
+                    onChange={(ev) => setSubjectId(ev.target.value)}
+                    placeholder="user@example.com"
+                  />
+                )}
+              </Field>
+              <Field label="系统角色">
+                {({ id, describedBy }) => (
+                  <SelectInput
+                    id={id}
+                    aria-describedby={describedBy}
+                    className="font-mono"
+                    value={roleName}
+                    onChange={(ev) => setRoleName(ev.target.value)}
+                  >
+                    <option value="tenant_admin">租户管理员</option>
+                    <option value="ad_placement:write">投放管理-写</option>
+                  </SelectInput>
+                )}
+              </Field>
+              <Button type="submit" variant="primary" size="md" isLoading={assignMut.isPending}>
                 {assignMut.isPending ? "提交…" : "分配"}
-              </button>
+              </Button>
             </form>
-          </section>
+          </OverlaySectionCard>
           <DataTable columns={columns} rows={rows} getRowKey={(r) => r.id} emptyText={rbacQ.isPending ? "加载中…" : "暂无分配"} />
         </>
       )}

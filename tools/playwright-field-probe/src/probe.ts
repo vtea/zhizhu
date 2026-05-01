@@ -8,9 +8,10 @@
  *   npm run probe:persistent
  *   PLAYWRIGHT_BROWSER_PROFILE=jiacheng-guoji npm run probe:persistent:headed
  */
-import { chromium, type Browser, type BrowserContext, type Request } from "playwright";
+import type { Browser, BrowserContext, Request } from "playwright";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import { launchFingerprintedBrowserContext } from "@zhizhu/playwright-browser-fingerprint";
 import {
   authDir,
   getBrowserProfileSlug,
@@ -111,15 +112,28 @@ let browser: Browser | undefined;
 let context: BrowserContext;
 
 if (anonymous) {
-  browser = await chromium.launch({ headless: !headed });
-  context = await browser.newContext();
+  /**
+   * 匿名模式也走指纹包：抖音的开放页面同样会做 bot 检测；headless `[]` languages、
+   * SwiftShader WebGL 这类指纹会立刻被识别，导致 probe 拿到的接口结构和真实用户不一致。
+   */
+  const launched = await launchFingerprintedBrowserContext({
+    headless: !headed,
+    seedOverride: `field-probe-anon:${slug}`,
+  });
+  browser = launched.browser;
+  context = launched.context;
 } else if (persistent) {
   context = await launchPersistentProfileContext(persistentProfileDir, slug, {
     headless: !headed,
   });
 } else {
-  browser = await chromium.launch({ headless: !headed });
-  context = await browser.newContext({ storageState: storageState! });
+  const launched = await launchFingerprintedBrowserContext({
+    headless: !headed,
+    seedOverride: `field-probe-storage:${slug}`,
+    extraNewContextOptions: { storageState: storageState! },
+  });
+  browser = launched.browser;
+  context = launched.context;
 }
 
 const page = context.pages()[0] ?? (await context.newPage());

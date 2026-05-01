@@ -130,6 +130,12 @@ npm run probe:anonymous
 
 详见 **`docs/Playwright探测记录-阶段1-匿名.md`**。
 
+### 抖音公网（短链 / 视频页）
+
+- **`npm run probe:douyin-short -- 'https://v.douyin.com/...'`**（可选 `--headed`）：汇总 **`page.url`**、XHR **`/aweme/v1/web/seo/inner/link/`** 中的 `/video/{id}` 与 `link_type` / `anchor`。  
+- **标题、发布时间、赞/评/藏/转/播放、封面** 等与自动化规则 **`captureResponse` + `json_path`** 的对照表：**[`docs/Playwright字段定位清单.md` §7.1](../../docs/Playwright字段定位清单.md)**（**`aweme/detail`**）。  
+- 单视频页全量 XHR：仍可用 **`PROBE_URL=https://www.douyin.com/video/{id} npm run probe:anonymous`**，在 **`.out/captured-json.ndjson`** 中搜 `aweme/detail`。
+
 环境变量：
 
 - `PROBE_URL`：单 URL 模式下的入口（默认与 `START_URL` 或线索版根域一致）  

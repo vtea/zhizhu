@@ -3,10 +3,13 @@
 /*
   视觉体系对齐仓库根 DESIGN.md（Cohere 启发）：
   主圆角 22px、冷灰描边、交互蓝 #1863dc；正文字体用 Inter 作为 Unica77 的可开源替代。
+  本文件同时承担 apps/web 与 apps/client 的设计令牌单一来源；客户端的样式会复制 @theme 段，
+  以便两端在「颜色 / 圆角 / 字体」上保持等价。
 */
 @theme {
   --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   --color-zz-black: #000000;
   --color-zz-near: #212121;
@@ -18,9 +21,18 @@
   --color-zz-card-border: #f2f2f2;
   --color-zz-white: #ffffff;
   --color-zz-blue: #1863dc;
+  --color-zz-blue-soft: #eaf1fd;
   --color-zz-focus: #9b60aa;
+  --color-zz-danger: #b42318;
+  --color-zz-danger-soft: #fef2f2;
+  --color-zz-warn: #b54708;
+  --color-zz-warn-soft: #fffaeb;
+  --color-zz-success: #036a52;
+  --color-zz-success-soft: #ecfdf5;
 
   --radius-signature: 22px;
+  --radius-control: 10px;
+  --radius-pill: 9999px;
 }
 
 @layer components {
@@ -30,6 +42,210 @@
   }
   .zz-skip-to-main:focus-visible {
     @apply translate-y-2 outline-2 outline-offset-2 outline-zz-blue/40;
+  }
+
+  /* === 按钮系统 ============================================================ */
+  /* 基础：所有变体共享（高度、字号、圆角、过渡、聚焦环、禁用态）。 */
+  .zz-btn {
+    @apply inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[var(--radius-pill)] border border-transparent text-sm font-medium leading-none whitespace-nowrap transition-colors duration-150 select-none;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zz-blue/40 focus-visible:ring-offset-1 focus-visible:ring-offset-zz-white;
+    @apply disabled:cursor-not-allowed disabled:opacity-55;
+  }
+  .zz-btn-sm {
+    @apply h-8 px-3 text-xs;
+  }
+  .zz-btn-md {
+    @apply h-10 px-4 text-sm;
+  }
+  .zz-btn-primary {
+    @apply bg-zz-black text-zz-white shadow-sm enabled:hover:bg-zz-deep;
+  }
+  .zz-btn-secondary {
+    @apply border-zz-border bg-zz-white text-zz-near shadow-sm enabled:hover:border-zz-blue/40 enabled:hover:text-zz-blue;
+  }
+  .zz-btn-danger {
+    @apply border-red-200 bg-zz-white text-zz-danger shadow-sm enabled:hover:bg-zz-danger-soft enabled:hover:border-zz-danger/40;
+  }
+  .zz-btn-ghost {
+    @apply border-transparent bg-transparent text-zz-near enabled:hover:bg-zz-snow enabled:hover:text-zz-near;
+  }
+  .zz-btn-link {
+    @apply h-auto rounded-none border-0 bg-transparent px-0 py-0 font-medium text-zz-blue enabled:hover:underline;
+  }
+  .zz-btn-block {
+    @apply w-full;
+  }
+  .zz-btn-spinner {
+    @apply mr-1 inline-block size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent;
+  }
+
+  /* === 表单控件 ============================================================ */
+  .zz-input {
+    @apply w-full rounded-[var(--radius-control)] border border-zz-border bg-zz-white px-3 py-2 text-sm text-zz-near outline-none transition-colors duration-150 placeholder:text-zz-muted;
+    @apply hover:border-zz-blue/40 focus:border-zz-blue focus:ring-2 focus:ring-zz-blue/15;
+    @apply disabled:cursor-not-allowed disabled:bg-zz-snow disabled:text-zz-muted;
+  }
+  .zz-input-mono {
+    @apply font-mono;
+  }
+  .zz-input-error {
+    @apply border-zz-danger focus:border-zz-danger focus:ring-zz-danger/15;
+  }
+
+  /* 字段三件套（label + 控件 + 提示/错误） */
+  .zz-field {
+    @apply flex flex-col gap-1.5;
+  }
+  .zz-field-label {
+    @apply flex items-baseline gap-1 text-sm font-medium text-zz-near;
+  }
+  /* 必填星号通过 ::after 注入，不进入 label 的 textContent，确保 getByLabel("邮箱") 等准确匹配。 */
+  .zz-field-label-required::after {
+    content: " *";
+    color: var(--color-zz-danger);
+    margin-left: 0.125rem;
+  }
+  .zz-field-required {
+    @apply text-zz-danger;
+  }
+  .zz-field-hint {
+    @apply text-xs leading-relaxed text-zz-muted;
+  }
+  .zz-field-error {
+    @apply text-xs font-medium leading-relaxed text-zz-danger;
+  }
+
+  /* === 卡片 / 分块 ========================================================= */
+  .zz-card {
+    @apply rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white px-6 py-6 shadow-[0_1px_2px_0_rgb(0_0_0_/_0.04)];
+  }
+  .zz-card-flush {
+    @apply rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white;
+  }
+  .zz-section-title {
+    @apply text-base font-semibold tracking-tight text-zz-near;
+  }
+  .zz-section-subtitle {
+    @apply mt-1 text-sm leading-relaxed text-zz-muted;
+  }
+
+  /* === 提示条 ============================================================== */
+  .zz-banner {
+    @apply rounded-[var(--radius-control)] border px-3 py-2 text-sm leading-relaxed;
+  }
+  .zz-banner-content {
+    @apply min-w-0 w-full break-words;
+  }
+  .zz-banner-content code {
+    @apply break-all font-mono text-[0.8125rem];
+  }
+  .zz-banner-info {
+    @apply border-zz-border-light bg-zz-snow text-zz-near;
+  }
+  .zz-banner-ok {
+    @apply border-emerald-200 bg-zz-success-soft text-zz-success;
+  }
+  .zz-banner-warn {
+    @apply border-amber-200 bg-zz-warn-soft text-zz-warn;
+  }
+  .zz-banner-error {
+    @apply border-red-200 bg-zz-danger-soft text-zz-danger;
+  }
+
+  /* === Pill / 徽标 ========================================================= */
+  .zz-pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
+  }
+  .zz-pill-neutral {
+    @apply bg-zz-snow text-zz-near ring-1 ring-zz-border-light;
+  }
+  .zz-pill-info {
+    @apply bg-zz-blue-soft text-zz-blue;
+  }
+  .zz-pill-warn {
+    @apply bg-amber-100 text-amber-900;
+  }
+  .zz-pill-success {
+    @apply bg-zz-success-soft text-zz-success ring-1 ring-emerald-200;
+  }
+  .zz-pill-danger {
+    @apply bg-zz-danger-soft text-zz-danger ring-1 ring-red-200;
+  }
+
+  /* === Tabs ================================================================ */
+  .zz-tabs {
+    @apply flex flex-wrap gap-1.5;
+  }
+  .zz-tab {
+    @apply inline-flex h-9 cursor-pointer items-center rounded-full border border-zz-border-light bg-zz-white px-3.5 text-sm font-medium text-zz-near transition-colors hover:border-zz-blue/40 hover:text-zz-blue;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zz-blue/40;
+  }
+  .zz-tab[aria-selected="true"] {
+    @apply border-transparent bg-zz-near text-zz-white shadow-sm hover:bg-zz-deep hover:text-zz-white;
+  }
+
+  /* === 树形缩进（不允许 div 写内联 style，故此处用 data-depth 桥接） ====== */
+  .zz-tree-row[data-depth="0"] { padding-left: 0; }
+  .zz-tree-row[data-depth="1"] { padding-left: 1.75rem; }
+  .zz-tree-row[data-depth="2"] { padding-left: 2.75rem; }
+  .zz-tree-row[data-depth="3"] { padding-left: 3.75rem; }
+  .zz-tree-row[data-depth="4"] { padding-left: 4.75rem; }
+  .zz-tree-row[data-depth="5"] { padding-left: 5.75rem; }
+  .zz-tree-row[data-depth="6"] { padding-left: 6.75rem; }
+  .zz-tree-row[data-depth="7"] { padding-left: 7.75rem; }
+
+  /* === 表格基线（DataTable 复用） ========================================== */
+  .zz-table {
+    @apply min-w-full border-collapse text-left text-sm;
+  }
+  .zz-table thead {
+    @apply border-b border-zz-border-light bg-zz-snow text-xs font-medium tracking-wide text-zz-muted uppercase;
+  }
+  .zz-table tbody {
+    @apply divide-y divide-zz-border-light text-zz-near;
+  }
+  .zz-table th {
+    @apply px-4 py-3 font-medium;
+  }
+  .zz-table td {
+    @apply min-w-0 px-4 py-3 align-middle;
+  }
+  .zz-table tbody tr:hover {
+    @apply bg-zz-snow/60;
+  }
+
+  @media (max-width: 640px) {
+    .zz-table-responsive thead {
+      @apply hidden;
+    }
+    .zz-table-responsive,
+    .zz-table-responsive tbody,
+    .zz-table-responsive tr,
+    .zz-table-responsive td {
+      display: block;
+      width: 100%;
+    }
+    .zz-table-responsive tbody {
+      @apply divide-y-0;
+    }
+    .zz-table-responsive tbody tr {
+      @apply border-b border-zz-border-light px-3 py-2;
+    }
+    .zz-table-responsive tbody tr:last-child {
+      @apply border-b-0;
+    }
+    .zz-table-responsive td {
+      @apply flex items-start justify-between gap-3 px-0 py-1.5;
+    }
+    .zz-table-responsive td::before {
+      content: attr(data-label);
+      @apply shrink-0 text-xs font-medium uppercase tracking-wide text-zz-muted;
+    }
+  }
+
+  /* === 等宽 / 诊断块 ======================================================= */
+  .zz-mono-block {
+    @apply m-0 max-h-56 overflow-auto rounded-[var(--radius-control)] border border-zz-border-light bg-zz-snow/60 px-3 py-2.5 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-zz-near;
   }
 }
 
@@ -43,5 +259,13 @@
   h2,
   .font-display {
     font-family: var(--font-display);
+  }
+
+  /* 让 form 元素继承字号/字体，避免控件「比文字小」。 */
+  button,
+  input,
+  select,
+  textarea {
+    font-family: inherit;
   }
 }

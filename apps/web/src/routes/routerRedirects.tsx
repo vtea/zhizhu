@@ -27,3 +27,13 @@ export function RedirectUnknownToSystemSettingsOrg() {
   }
   return <Navigate to={`/t/${encodeURIComponent(tenantId)}/system-settings/organization`} replace />;
 }
+
+/** 旧书签 `/t/:tenantId/system-settings/tasks` → 侧栏一级「任务中心」 */
+export function RedirectLegacySystemSettingsTasksToTaskCenter() {
+  const { tenantId } = useParams();
+  const loc = useLocation();
+  if (!tenantId) {
+    return <Navigate to="/login" replace state={{ from: loc }} />;
+  }
+  return <Navigate to={`/t/${encodeURIComponent(tenantId)}/task-center`} replace />;
+}

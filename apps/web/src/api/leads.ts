@@ -2,6 +2,8 @@ import { getApiBaseUrl } from "@/api/env";
 import { inInteractionWindow, type AnalyticsFilters, parseYmd } from "@/api/analytics-filters";
 import { apiDeleteJson, apiGetJson, apiPatchJson } from "@/api/http";
 import type { LeadStage, Paginated } from "@/api/types";
+import { sameBizAccountId } from "@/lib/bizAccountId";
+import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
 import { sleepMock } from "@/mocks/delay";
 import { MOCK_TENANT, mockLeads, type MockLead } from "@/mocks/seed";
 
@@ -10,6 +12,7 @@ export type ListLeadsQuery = {
   leadStage: LeadStage;
   page: number;
   pageSize: number;
+  dyLeadsEnterpriseId?: string | null;
 } & Pick<AnalyticsFilters, "accountId" | "from" | "to">;
 
 function filterLeads(
@@ -19,10 +22,13 @@ function filterLeads(
     if (r.tenant_id !== q.tenantId) {
       return false;
     }
+    if (q.dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(r.dy_leads_enterprise_id, q.dyLeadsEnterpriseId)) {
+      return false;
+    }
     if (r.lead_stage !== q.leadStage) {
       return false;
     }
-    if (q.accountId && r.account_id !== q.accountId) {
+    if (q.accountId && !sameBizAccountId(r.account_id, q.accountId)) {
       return false;
     }
     return inInteractionWindow(r.dy_last_interaction_at, q.from, q.to);
@@ -45,6 +51,9 @@ export async function listLeads(q: ListLeadsQuery): Promise<Paginated<MockLead>>
     }
     if (q.to) {
       params.set("to", q.to);
+    }
+    if (q.dyLeadsEnterpriseId?.trim()) {
+      params.set("dy_leads_enterprise_id", q.dyLeadsEnterpriseId.trim());
     }
     return apiGetJson<Paginated<MockLead>>(
       `/api/v1/tenants/${encodeURIComponent(q.tenantId)}/leads?${params}`,
@@ -70,6 +79,7 @@ export function countLeadsByStage(tenantId: string, filters: AnalyticsFilters): 
     accountId: filters.accountId,
     from: parseYmd(filters.from),
     to: parseYmd(filters.to),
+    dyLeadsEnterpriseId: filters.dyLeadsEnterpriseId,
   } as ListLeadsQuery);
   const convF = filterLeads({
     tenantId,
@@ -79,16 +89,26 @@ export function countLeadsByStage(tenantId: string, filters: AnalyticsFilters): 
     accountId: filters.accountId,
     from: parseYmd(filters.from),
     to: parseYmd(filters.to),
+    dyLeadsEnterpriseId: filters.dyLeadsEnterpriseId,
   } as ListLeadsQuery);
   return { open: openF.length, converted: convF.length };
 }
 
-export async function patchLead(tenantId: string, leadId: string, lead_stage: LeadStage): Promise<void> {
+export type PatchLeadPayload = {
+  lead_stage?: LeadStage;
+  dy_nickname?: string | null;
+  dy_region?: string | null;
+  dy_intent_level?: string | null;
+  dy_video_id?: string | null;
+  dy_lead_id?: string | null;
+};
+
+export async function patchLead(tenantId: string, leadId: string, payload: PatchLeadPayload): Promise<void> {
   const base = getApiBaseUrl();
   if (!base) {
     throw new Error("未配置 VITE_API_BASE_URL");
   }
-  await apiPatchJson(`/api/v1/tenants/${encodeURIComponent(tenantId)}/leads/${encodeURIComponent(leadId)}`, { lead_stage });
+  await apiPatchJson(`/api/v1/tenants/${encodeURIComponent(tenantId)}/leads/${encodeURIComponent(leadId)}`, payload);
 }
 
 export async function deleteLead(tenantId: string, leadId: string): Promise<void> {
