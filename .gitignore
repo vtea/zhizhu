@@ -8,6 +8,7 @@ __MACOSX/
 !.env.example
 node_modules/
 apps/*/dist/
+apps/*/release/
 packages/*/dist/
 
 # 视频封面本地落盘（租户-账户-视频 目录），勿提交二进制
