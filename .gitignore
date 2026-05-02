@@ -7,9 +7,22 @@ __MACOSX/
 .env.*.local
 !.env.example
 node_modules/
-apps/*/dist/
+
+# 编译输出（任意 workspace / 工具包下的 dist）
+dist/
 apps/*/release/
-packages/*/dist/
+
+# Playwright 报告与缓存（与 e2e-playwright-zhizhu-web/.gitignore 对齐，根目录统一兜底）
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# TypeScript / 覆盖率 / ESLint 本地缓存
+*.tsbuildinfo
+coverage/
+.nyc_output/
+.eslintcache
 
 # 视频封面本地落盘（租户-账户-视频 目录），勿提交二进制
 storage/video-covers/
