@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.renderer.json",
+  "compilerOptions": {
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "./**/*",
+    "../sharedTypes.ts",
+    "../preload.ts",
+    "../consolePaths.ts",
+    "../bizVideoDyHomepageMerge.ts"
+  ]
+}

@@ -7,6 +7,21 @@ import { isValidTenantSlug } from "./config";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let ws: any = null;
 let pingTimer: ReturnType<typeof setInterval> | null = null;
+/** 主动替换/停止连接时，旧 socket 的 `close` 不应触发自动重连 */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let socketPendingReplace: any = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempts = 0;
+const WSS_RECONNECT_MAX = 24;
+const WSS_RECONNECT_BASE_MS = 2000;
+const WSS_RECONNECT_CAP_MS = 120_000;
+
+function clearReconnectTimer(): void {
+  if (reconnectTimer != null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
 
 function clearPingTimer(): void {
   if (pingTimer != null) {
@@ -16,8 +31,10 @@ function clearPingTimer(): void {
 }
 
 export function stopDeviceWss(): void {
+  clearReconnectTimer();
   clearPingTimer();
   if (ws != null) {
+    socketPendingReplace = ws;
     try {
       ws.close();
     } catch {
@@ -65,7 +82,18 @@ function buildConnectUrl(st: { deviceAccessToken?: string | null }): string | nu
 }
 
 export function startDeviceWssIfConfigured(app: App): void {
-  stopDeviceWss();
+  clearReconnectTimer();
+  clearPingTimer();
+  if (ws != null) {
+    socketPendingReplace = ws;
+    try {
+      ws.close();
+    } catch {
+      /* noop */
+    }
+    ws = null;
+  }
+
   const W = typeof globalThis.WebSocket !== "undefined" ? globalThis.WebSocket : undefined;
   if (!W) {
     console.warn("[zhizhu-client] 主进程无全局 WebSocket，已跳过 WSS");
@@ -87,6 +115,7 @@ export function startDeviceWssIfConfigured(app: App): void {
     /** 少数打包/ polyfill 下 `W.OPEN` 可能未挂常量，READY 态数值恒为 1（与 WHATWG 一致） */
     const OPEN = typeof W.OPEN === "number" ? W.OPEN : 1;
     socket.addEventListener("open", () => {
+      reconnectAttempts = 0;
       console.log("[zhizhu-client] WSS 已连接");
     });
     socket.addEventListener("error", () => {
@@ -94,10 +123,25 @@ export function startDeviceWssIfConfigured(app: App): void {
       clearPingTimer();
     });
     socket.addEventListener("close", () => {
+      if (socketPendingReplace === socket) {
+        socketPendingReplace = null;
+        return;
+      }
       if (ws === socket) {
         ws = null;
       }
       clearPingTimer();
+      reconnectAttempts += 1;
+      if (reconnectAttempts > WSS_RECONNECT_MAX) {
+        console.warn("[zhizhu-client] WSS 自动重连已达上限，已停止");
+        return;
+      }
+      const delay = Math.min(WSS_RECONNECT_CAP_MS, WSS_RECONNECT_BASE_MS * 2 ** (reconnectAttempts - 1));
+      console.warn(`[zhizhu-client] WSS 断开，${Math.round(delay / 1000)}s 后重连（第 ${reconnectAttempts}/${WSS_RECONNECT_MAX} 次）`);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        startDeviceWssIfConfigured(app);
+      }, delay);
     });
     pingTimer = setInterval(() => {
       try {

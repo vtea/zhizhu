@@ -7,11 +7,40 @@ import * as path from "node:path";
 import type { App } from "electron";
 import type { RuleBody } from "@zhizhu/playwright-rule-schema";
 
+import { extractDouyinUserSecUidFromCanonicalHomepageUrl } from "./douyinUserHomepageCanonical";
 import { readClientState } from "./clientState";
 import { getApiBaseUrl } from "./config";
 import type { FileRuleSkipDetailDto } from "./sharedTypes.js";
 
 export const TENANT_DEVICE_HTTP_TIMEOUT_MS = 28_000;
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 仅用于 GET：短连接上的网络抖动 / 5xx / 429 退避重试（POST 默认不重试，避免非幂等重复写） */
+const TENANT_DEVICE_GET_MAX_ATTEMPTS = 3;
+const TENANT_DEVICE_GET_RETRY_BASE_MS = 400;
+
+function isRetriableTenantDeviceGetFailure(r: { ok: false; status: number; message: string }): boolean {
+  if (r.status === 0) {
+    return true;
+  }
+  if (r.status === 429 || r.status === 502 || r.status === 503 || r.status === 504) {
+    return true;
+  }
+  const m = r.message.toLowerCase();
+  return (
+    m.includes("fetch failed") ||
+    m.includes("aborted") ||
+    m.includes("econnreset") ||
+    m.includes("econnrefused") ||
+    m.includes("etimedout") ||
+    m.includes("timeout") ||
+    m.includes("socket") ||
+    m.includes("network")
+  );
+}
 
 export interface TenantDeviceApiContext {
   apiRoot: string;
@@ -38,49 +67,66 @@ export async function tenantDeviceHttpJson<T>(
   pathSuffix: string,
   body?: unknown,
 ): Promise<{ ok: true; status: number; data: T } | { ok: false; status: number; message: string }> {
-  let url = "";
-  try {
-    url = new URL(`api/v1/tenants/${encodeURIComponent(ctx.tenantId)}${pathSuffix}`, ctx.apiRoot).href;
-  } catch (e) {
-    return { ok: false as const, status: 0, message: `URL 拼装失败：${e instanceof Error ? e.message : String(e)}` };
-  }
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${ctx.token}`,
-    Accept: "application/json",
-  };
-  if (body !== undefined) {
-    headers["Content-Type"] = "application/json; charset=utf-8";
-  }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TENANT_DEVICE_HTTP_TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method,
-      signal: ctrl.signal,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch (e) {
-    clearTimeout(timer);
-    return { ok: false as const, status: 0, message: e instanceof Error ? e.message : String(e) };
-  }
-  clearTimeout(timer);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    let parsed: string | null = null;
+  const once = async (): Promise<{ ok: true; status: number; data: T } | { ok: false; status: number; message: string }> => {
+    let url = "";
     try {
-      const j = JSON.parse(text) as { error?: unknown };
-      if (typeof j?.error === "string" && j.error.trim()) {
-        parsed = j.error.trim();
-      }
-    } catch {
-      /* 非 JSON 错误体兜底 */
+      url = new URL(`api/v1/tenants/${encodeURIComponent(ctx.tenantId)}${pathSuffix}`, ctx.apiRoot).href;
+    } catch (e) {
+      return { ok: false as const, status: 0, message: `URL 拼装失败：${e instanceof Error ? e.message : String(e)}` };
     }
-    return { ok: false as const, status: res.status, message: parsed ?? text.slice(0, 400) ?? `HTTP ${res.status}` };
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${ctx.token}`,
+      Accept: "application/json",
+    };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json; charset=utf-8";
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TENANT_DEVICE_HTTP_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        signal: ctrl.signal,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      return { ok: false as const, status: 0, message: e instanceof Error ? e.message : String(e) };
+    }
+    clearTimeout(timer);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      let parsed: string | null = null;
+      try {
+        const j = JSON.parse(text) as { error?: unknown };
+        if (typeof j?.error === "string" && j.error.trim()) {
+          parsed = j.error.trim();
+        }
+      } catch {
+        /* 非 JSON 错误体兜底 */
+      }
+      return { ok: false as const, status: res.status, message: parsed ?? text.slice(0, 400) ?? `HTTP ${res.status}` };
+    }
+    const data = (await res.json().catch(() => ({}))) as T;
+    return { ok: true as const, status: res.status, data };
+  };
+
+  if (method !== "GET") {
+    return once();
   }
-  const data = (await res.json().catch(() => ({}))) as T;
-  return { ok: true as const, status: res.status, data };
+  for (let attempt = 1; attempt <= TENANT_DEVICE_GET_MAX_ATTEMPTS; attempt++) {
+    const r = await once();
+    if (r.ok) {
+      return r;
+    }
+    if (!isRetriableTenantDeviceGetFailure(r) || attempt >= TENANT_DEVICE_GET_MAX_ATTEMPTS) {
+      return r;
+    }
+    await sleepMs(TENANT_DEVICE_GET_RETRY_BASE_MS * 2 ** (attempt - 1));
+  }
+  return { ok: false as const, status: 0, message: "GET 重试耗尽" };
 }
 
 /**
@@ -90,6 +136,43 @@ export async function tenantDeviceHttpJson<T>(
  * 让 UI 能把"入库 biz_account"这种硬编码错误彻底去掉；
  * `skip_reasons` 为分项计数；`skip_details` 为逐条中文明细（含引荐人/线索标识）。
  */
+const FILE_RULE_INGEST_MAX_ATTEMPTS = 3;
+const FILE_RULE_INGEST_RETRY_BASE_MS = 500;
+
+function isRetriableFileRuleIngestFailure(r: { ok: false; status: number; message: string }): boolean {
+  if (r.status === 0) {
+    return true;
+  }
+  if (r.status === 429 || r.status === 502 || r.status === 503 || r.status === 504) {
+    return true;
+  }
+  const m = r.message.toLowerCase();
+  return (
+    m.includes("fetch failed") ||
+    m.includes("aborted") ||
+    m.includes("econnreset") ||
+    m.includes("econnrefused") ||
+    m.includes("etimedout") ||
+    m.includes("timeout") ||
+    m.includes("socket") ||
+    m.includes("network")
+  );
+}
+
+/**
+ * POST `/runner/file-rule-ingest` 前冻结行数组：与试跑结案 / 任务 PATCH 中 `rows_count` 对齐，
+ * 且避免与 Runner `summary.rows` 同一引用被后续逻辑改动导致「已写入条数 vs 展示行数」漂移。
+ */
+export function cloneFileRuleIngestRowsSnapshot(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  try {
+    return JSON.parse(JSON.stringify(rows)) as Record<string, unknown>[];
+  } catch {
+    return rows.map((r) =>
+      r && typeof r === "object" && !Array.isArray(r) ? ({ ...r } as Record<string, unknown>) : {},
+    );
+  }
+}
+
 export async function postEmployeePersonalAuthFileRuleIngest(
   ctx: TenantDeviceApiContext,
   taskId: string,
@@ -108,38 +191,47 @@ export async function postEmployeePersonalAuthFileRuleIngest(
     }
   | { ok: false; status: number; message: string }
 > {
-  const r = await tenantDeviceHttpJson<{
-    ok?: true;
-    target?: string;
-    written?: number;
-    skipped?: number;
-    skip_reasons?: Record<string, number>;
-    skip_details?: unknown;
-    skip_details_truncated?: unknown;
-  }>(ctx, "POST", "/runner/file-rule-ingest", {
-    task_id: taskId,
-    rule_id: ruleId,
-    rows,
-    mapping,
-  });
-  if (!r.ok) {
-    return { ok: false as const, status: r.status, message: r.message };
+  let lastErr: { ok: false; status: number; message: string } | undefined;
+  for (let attempt = 0; attempt < FILE_RULE_INGEST_MAX_ATTEMPTS; attempt++) {
+    const r = await tenantDeviceHttpJson<{
+      ok?: true;
+      target?: string;
+      written?: number;
+      skipped?: number;
+      skip_reasons?: Record<string, number>;
+      skip_details?: unknown;
+      skip_details_truncated?: unknown;
+    }>(ctx, "POST", "/runner/file-rule-ingest", {
+      task_id: taskId,
+      rule_id: ruleId,
+      rows,
+      mapping,
+    });
+    if (r.ok) {
+      const written = typeof r.data.written === "number" ? r.data.written : rows.length;
+      const skipped = typeof r.data.skipped === "number" ? r.data.skipped : 0;
+      const target = typeof r.data.target === "string" && r.data.target.length > 0 ? r.data.target : null;
+      const skipReasons =
+        r.data.skip_reasons && typeof r.data.skip_reasons === "object" ? r.data.skip_reasons : null;
+      const skipDetails = coerceFileRuleSkipDetails(r.data.skip_details);
+      const skipDetailsTruncated = Boolean(r.data.skip_details_truncated);
+      return {
+        ok: true as const,
+        written,
+        skipped,
+        target,
+        skip_reasons: skipReasons,
+        skip_details: skipDetails,
+        skip_details_truncated: skipDetailsTruncated,
+      };
+    }
+    lastErr = { ok: false as const, status: r.status, message: r.message };
+    if (attempt >= FILE_RULE_INGEST_MAX_ATTEMPTS - 1 || !isRetriableFileRuleIngestFailure(lastErr)) {
+      break;
+    }
+    await sleepMs(FILE_RULE_INGEST_RETRY_BASE_MS * 2 ** attempt);
   }
-  const written = typeof r.data.written === "number" ? r.data.written : rows.length;
-  const skipped = typeof r.data.skipped === "number" ? r.data.skipped : 0;
-  const target = typeof r.data.target === "string" && r.data.target.length > 0 ? r.data.target : null;
-  const skipReasons = r.data.skip_reasons && typeof r.data.skip_reasons === "object" ? r.data.skip_reasons : null;
-  const skipDetails = coerceFileRuleSkipDetails(r.data.skip_details);
-  const skipDetailsTruncated = Boolean(r.data.skip_details_truncated);
-  return {
-    ok: true as const,
-    written,
-    skipped,
-    target,
-    skip_reasons: skipReasons,
-    skip_details: skipDetails,
-    skip_details_truncated: skipDetailsTruncated,
-  };
+  return lastErr ?? { ok: false as const, status: 0, message: "入库请求失败" };
 }
 
 function coerceFileRuleSkipDetails(raw: unknown): FileRuleSkipDetailDto[] {
@@ -550,6 +642,25 @@ function toIsoFromUnixSecOrMs(v: unknown): string | null {
   return d.toISOString();
 }
 
+/** 发布时间：Unix 秒/毫秒或少数接口的 ISO 字符串。 */
+function pickPublishIsoFromAwemeLike(obj: Record<string, unknown>): string | null {
+  const fromNum =
+    toIsoFromUnixSecOrMs(obj.create_time) ??
+    toIsoFromUnixSecOrMs(obj.aweme_create_time) ??
+    toIsoFromUnixSecOrMs(obj.publish_time) ??
+    toIsoFromUnixSecOrMs(obj.dy_publish_at);
+  if (fromNum) {
+    return fromNum;
+  }
+  for (const k of ["createTime", "publishTime"] as const) {
+    const s = pickStr(obj[k]);
+    if (s && Number.isFinite(Date.parse(s))) {
+      return new Date(s).toISOString();
+    }
+  }
+  return null;
+}
+
 function collectObjectsDeep(v: unknown, out: Record<string, unknown>[]): void {
   if (Array.isArray(v)) {
     for (const item of v) {
@@ -766,6 +877,7 @@ function mergedBizVideoRowLooksLikeNonVideo(row: Record<string, unknown>): boole
 
 /**
  * 有业务账号锚点（作者过滤）时，要求至少具备一项可核对「确有短视频实体」的信号，避免仅标题/SEO 碎片入库。
+ * 列表接口常缺 play_count / 封面，但有 digg_count（点赞）等互动字段，亦视为有效信号。
  */
 function mergedBizVideoRowHasMinimalMediaSignal(row: Record<string, unknown>): boolean {
   if (pickStr(row.dy_cover_url)) {
@@ -775,8 +887,10 @@ function mergedBizVideoRowHasMinimalMediaSignal(row: Record<string, unknown>): b
   if (d != null && d > 0) {
     return true;
   }
-  if (row.dy_play_count != null && pickInt(row.dy_play_count) != null) {
-    return true;
+  for (const k of ["dy_play_count", "dy_like_count", "dy_comment_count", "dy_favorite_count", "dy_share_count"] as const) {
+    if (row[k] != null && pickInt(row[k]) != null) {
+      return true;
+    }
   }
   return false;
 }
@@ -833,13 +947,24 @@ function rowMatchesRecentWindow(
   return publishMs >= floorMs && publishMs <= anchorTimeMs + 5 * 60 * 1000;
 }
 
-function isBizVideoAuthorFilterActive(params: Record<string, unknown>): boolean {
+/**
+ * 是否有租户业务锚点（account_id 等）。用于合并后「最低媒体信号」门槛，避免纯标题/占位入库。
+ */
+function isBizVideoMergeQualityStrict(params: Record<string, unknown>): boolean {
   return !!(
     pickStr(params.target_dy_unique_id) ||
     pickStr(params.target_author_uid) ||
     pickStr(params.account_id) ||
     pickStr(params.target_account_id)
   );
+}
+
+/**
+ * 是否启用了抖音侧作者身份过滤（target_*）。仅有租户 UUID 的 account_id **不算**——否则合并阶段会把
+ * 「仅有 account_id、无 detail」误判为作者过滤，丢弃全部纯 SEO 链行，造成 captures 有数据而 rows 为空。
+ */
+function isBizVideoDouyinAuthorAnchorActive(params: Record<string, unknown>): boolean {
+  return !!(pickStr(params.target_dy_unique_id) || pickStr(params.target_author_uid));
 }
 
 function awemeAuthorMatchesBizAccount(obj: Record<string, unknown>, params: Record<string, unknown>): boolean {
@@ -853,6 +978,10 @@ function awemeAuthorMatchesBizAccount(obj: Record<string, unknown>, params: Reco
 
   const authorRaw = obj.author;
   if (!authorRaw || typeof authorRaw !== "object" || Array.isArray(authorRaw)) {
+    /**
+     * 执行到此处时 `target_dy_unique_id` / `target_author_uid` 已非空；缺 `author` 则无法核对作者，
+     * 不得再凭 stats/主页放行（推荐流混包会误绑 `account_id`）。
+     */
     return false;
   }
   const author = authorRaw as Record<string, unknown>;
@@ -983,6 +1112,19 @@ function buildRowsFromSeoInnerLinkPayload(
   return out;
 }
 
+/** 合并 `stats`（列表常见）与 `statistics`（详情常见），同名键以后者为准。 */
+function mergeAwemeStatsObjects(obj: Record<string, unknown>): Record<string, unknown> {
+  const fromStats =
+    obj.stats && typeof obj.stats === "object" && !Array.isArray(obj.stats)
+      ? (obj.stats as Record<string, unknown>)
+      : {};
+  const fromStatistics =
+    obj.statistics && typeof obj.statistics === "object" && !Array.isArray(obj.statistics)
+      ? (obj.statistics as Record<string, unknown>)
+      : {};
+  return { ...fromStats, ...fromStatistics };
+}
+
 function mapUnknownVideoObjectToRow(
   obj: Record<string, unknown>,
   accountId: string | null,
@@ -995,10 +1137,7 @@ function mapUnknownVideoObjectToRow(
   if (shouldRejectAwemeAsNonVideo(obj)) {
     return null;
   }
-  const stats =
-    obj.statistics && typeof obj.statistics === "object" && !Array.isArray(obj.statistics)
-      ? (obj.statistics as Record<string, unknown>)
-      : {};
+  const stats = mergeAwemeStatsObjects(obj);
   const videoObj =
     obj.video && typeof obj.video === "object" && !Array.isArray(obj.video)
       ? (obj.video as Record<string, unknown>)
@@ -1023,11 +1162,7 @@ function mapUnknownVideoObjectToRow(
     sanitizeDyTitle(obj.dy_title) ??
     sanitizeDyTitle(obj.title) ??
     null;
-  const publishAt =
-    toIsoFromUnixSecOrMs(obj.create_time) ??
-    toIsoFromUnixSecOrMs(obj.publish_time) ??
-    toIsoFromUnixSecOrMs(obj.dy_publish_at) ??
-    null;
+  const publishAt = pickPublishIsoFromAwemeLike(obj);
   const durationRaw = pickNum(obj.duration) ?? pickNum(videoObj.duration) ?? pickNum(obj.dy_duration_sec);
   const durationSec =
     durationRaw == null
@@ -1042,7 +1177,9 @@ function mapUnknownVideoObjectToRow(
     dy_video_url: normalizeDyVideoUrl(obj.share_url ?? obj.video_url ?? obj.dy_video_url, dyVideoId),
     dy_publish_at: publishAt,
     dy_duration_sec: durationSec,
-    dy_play_count: pickInt(stats.play_count ?? obj.play_count ?? obj.dy_play_count),
+    dy_play_count: pickInt(
+      stats.play_count ?? stats.aweme_play_count ?? obj.play_count ?? obj.dy_play_count,
+    ),
     dy_like_count: pickInt(stats.digg_count ?? obj.like_count ?? obj.dy_like_count),
     dy_comment_count: pickInt(stats.comment_count ?? obj.comment_count ?? obj.dy_comment_count),
     dy_favorite_count: pickInt(stats.collect_count ?? obj.favorite_count ?? obj.dy_favorite_count),
@@ -1072,6 +1209,130 @@ function mapUnknownVideoObjectToRow(
   return row;
 }
 
+/** `buildBizVideoRowsFromCaptures` 在产出 0 行时供试跑/队列提示的可选诊断计数（由调用方传入可变对象）。 */
+export type BizVideoRowDerivationDebug = {
+  deep_collect_objects: number;
+  seo_id_count: number;
+  detail_id_count: number;
+  ordered_id_count: number;
+  dropped_douyin_anchor_no_detail: number;
+  dropped_non_video: number;
+  dropped_recent_window: number;
+  dropped_minimal_media_signal: number;
+};
+
+export function formatBizVideoRowDerivationDebugZh(d: BizVideoRowDerivationDebug): string {
+  return (
+    `入库行推导：深层遍历对象 ${d.deep_collect_objects}；` +
+    `SEO 视频 id ${d.seo_id_count}，详情 ${d.detail_id_count}，合并候选 ${d.ordered_id_count}；` +
+    `丢弃：抖音锚点仅认详情 ${d.dropped_douyin_anchor_no_detail}，` +
+    `非短视频标题 ${d.dropped_non_video}，` +
+    `近期时间窗 ${d.dropped_recent_window}，` +
+    `最低媒体信号 ${d.dropped_minimal_media_signal}。`
+  );
+}
+
+export function emptyBizVideoRowDerivationDebug(): BizVideoRowDerivationDebug {
+  return {
+    deep_collect_objects: 0,
+    seo_id_count: 0,
+    detail_id_count: 0,
+    ordered_id_count: 0,
+    dropped_douyin_anchor_no_detail: 0,
+    dropped_non_video: 0,
+    dropped_recent_window: 0,
+    dropped_minimal_media_signal: 0,
+  };
+}
+
+function looksLikeDouyinSnowflakeUid(s: string): boolean {
+  return /^\d{16,22}$/.test(s.trim());
+}
+
+/**
+ * 员工档案未维护 dy_unique_id 时，从列表/详情抓包统计主导作者，临时写入 target_*，收紧「无锚点整桶放行」。
+ * 仅统计含合法 aweme_id 且带 `author` 的对象；返回 null 表示不足以判定。
+ */
+export function inferBizVideoDouyinAnchorFromAwemePayloads(
+  listPayload: unknown,
+  detailPayload: unknown,
+): { target_author_uid?: string; target_dy_unique_id?: string } | null {
+  const uidCounts = new Map<string, number>();
+  const uniqueIdCounts = new Map<string, number>();
+
+  const allObjs: Record<string, unknown>[] = [];
+  collectObjectsDeep(listPayload, allObjs);
+  collectObjectsDeep(detailPayload, allObjs);
+
+  for (const obj of allObjs) {
+    if (!resolveDyVideoIdFromAwemeLikeObject(obj)) {
+      continue;
+    }
+    const authorRaw = obj.author;
+    if (!authorRaw || typeof authorRaw !== "object" || Array.isArray(authorRaw)) {
+      continue;
+    }
+    const author = authorRaw as Record<string, unknown>;
+    const uidRaw =
+      pickStr(author.uid) ??
+      (typeof author.uid === "number" && Number.isFinite(author.uid) ? String(Math.trunc(author.uid)) : "");
+    const uid = uidRaw.trim();
+    if (uid && looksLikeDouyinSnowflakeUid(uid)) {
+      uidCounts.set(uid, (uidCounts.get(uid) ?? 0) + 1);
+      continue;
+    }
+    const handle =
+      (pickStr(author.unique_id) ?? pickStr(author.uniqueId) ?? pickStr(author.sec_uid) ?? pickStr(author.secUid) ?? "")
+        .trim()
+        .toLowerCase();
+    if (handle.length > 0 && !looksLikeDouyinSnowflakeUid(handle)) {
+      uniqueIdCounts.set(handle, (uniqueIdCounts.get(handle) ?? 0) + 1);
+    }
+  }
+
+  const pickDominant = (counts: Map<string, number>): { key: string; count: number; total: number } | null => {
+    let total = 0;
+    for (const v of counts.values()) {
+      total += v;
+    }
+    if (total === 0) {
+      return null;
+    }
+    let bestK = "";
+    let bestV = 0;
+    for (const [k, v] of counts) {
+      if (v > bestV) {
+        bestV = v;
+        bestK = k;
+      }
+    }
+    return { key: bestK, count: bestV, total };
+  };
+
+  const dominantPasses = (d: { key: string; count: number; total: number }): boolean => {
+    if (!d.key || d.total === 0) {
+      return false;
+    }
+    const ratio = d.count / d.total;
+    if (d.count >= 2 && ratio >= 0.55) {
+      return true;
+    }
+    return d.total >= 2 && d.count === d.total;
+  };
+
+  const uidDom = pickDominant(uidCounts);
+  if (uidDom && dominantPasses(uidDom)) {
+    return { target_author_uid: uidDom.key };
+  }
+
+  const uniqDom = pickDominant(uniqueIdCounts);
+  if (uniqDom && dominantPasses(uniqDom)) {
+    return { target_dy_unique_id: uniqDom.key };
+  }
+
+  return null;
+}
+
 export function buildBizVideoRowsFromCaptures(
   captures: Record<string, unknown>,
   options?: {
@@ -1082,11 +1343,36 @@ export function buildBizVideoRowsFromCaptures(
      * 不传时仍 clamp 到最多 200，与历史上限一致。
      */
     rowMergeCap?: number;
+    /** 传入可变对象时写入推导计数，便于 0 行时排查。 */
+    derivationDebug?: BizVideoRowDerivationDebug;
   },
 ): Record<string, unknown>[] {
-  const listPayload = captures.dy_latest_video_payload ?? captures.dy_video_list_payload ?? captures.video_list_payload;
+  const postListPayload = captures.dy_latest_video_payload ?? captures.dy_video_list_payload ?? captures.video_list_payload;
+  /** 新规则将 seo/inner/link 单独入桶；旧 captures 仍只有 dy_latest_video_payload 混合包 */
+  const hasSplitSeoBucket = Object.prototype.hasOwnProperty.call(captures, "dy_seo_inner_link_payload");
+  const seoLinkPayload = hasSplitSeoBucket ? captures.dy_seo_inner_link_payload : undefined;
   const detailPayload = captures.dy_video_detail_payload ?? captures.video_detail_payload;
-  const params = options?.params ?? {};
+  let params: Record<string, unknown> = { ...(options?.params ?? {}) };
+  const homeUrl = pickStr(params.dy_homepage_url)?.trim();
+  /** 与 mergeDyHomepageUrlIntoParams 一致：规范主页 URL 含 `/user/{sec_uid}` 时优先锚定作者，避免仅靠 SEO 混包推断 */
+  if (homeUrl && !isBizVideoDouyinAuthorAnchorActive(params)) {
+    const sec = extractDouyinUserSecUidFromCanonicalHomepageUrl(homeUrl);
+    if (sec.length > 0) {
+      params = { ...params, target_dy_unique_id: sec.toLowerCase() };
+    }
+  }
+  if (homeUrl && !isBizVideoDouyinAuthorAnchorActive(params)) {
+    const inferred = inferBizVideoDouyinAnchorFromAwemePayloads(postListPayload, detailPayload);
+    if (inferred?.target_author_uid) {
+      params = { ...params, target_author_uid: inferred.target_author_uid };
+    }
+    if (inferred?.target_dy_unique_id) {
+      params = { ...params, target_dy_unique_id: inferred.target_dy_unique_id };
+    }
+  }
+  /** 已合并主页但仍无法绑定抖音作者锚点时，SEO inner/link 多为推荐链，整段跳过避免脏 id */
+  const skipSeoInnerLink =
+    Boolean(homeUrl) && !isBizVideoDouyinAuthorAnchorActive(params);
   const listMode = normalizeBizVideoListMode(params);
   const recentWindowHours = pickRecentWindowHours(params);
   const anchorTimeMs = pickAnchorTimeMs(params);
@@ -1096,7 +1382,13 @@ export function buildBizVideoRowsFromCaptures(
     Number.isFinite(capRaw) && capRaw > 0
       ? Math.max(1, Math.min(10_000, Math.floor(capRaw)))
       : Math.max(1, Math.min(10_000, pickInt(params.limit_n) ?? 5000));
-  const seoRows = buildRowsFromSeoInnerLinkPayload(listPayload, accountId, rowCap);
+  const seoRows = skipSeoInnerLink
+    ? []
+    : buildRowsFromSeoInnerLinkPayload(
+        hasSplitSeoBucket ? seoLinkPayload : postListPayload,
+        accountId,
+        rowCap,
+      );
   const seoMap = new Map<string, Record<string, unknown>>();
   for (const row of seoRows) {
     const id = pickStr(row.dy_video_id);
@@ -1106,7 +1398,7 @@ export function buildBizVideoRowsFromCaptures(
   }
 
   const allObjs: Record<string, unknown>[] = [];
-  collectObjectsDeep(listPayload, allObjs);
+  collectObjectsDeep(postListPayload, allObjs);
   collectObjectsDeep(detailPayload, allObjs);
   const detailMap = new Map<string, Record<string, unknown>>();
   for (const obj of allObjs) {
@@ -1133,15 +1425,29 @@ export function buildBizVideoRowsFromCaptures(
       orderedIds.push(id);
     }
   }
-  const authorStrict = isBizVideoAuthorFilterActive(params);
+  const dbg = options?.derivationDebug;
+  if (dbg) {
+    dbg.deep_collect_objects += allObjs.length;
+    dbg.seo_id_count += seoMap.size;
+    dbg.detail_id_count += detailMap.size;
+    dbg.ordered_id_count += orderedIds.length;
+  }
+  const douyinAuthorAnchorActive = isBizVideoDouyinAuthorAnchorActive(params);
+  const mergeQualityStrict = isBizVideoMergeQualityStrict(params);
   for (const id of orderedIds) {
     const seo = seoMap.get(id) ?? null;
     const detail = detailMap.get(id) ?? null;
     if (!seo && !detail) {
       continue;
     }
-    if (authorStrict && !detail) {
-      /** 已启用作者过滤时，仅采信带 author 的详情对象，避免 SEO 推荐链误入库 */
+    if (douyinAuthorAnchorActive && !detail) {
+      /**
+       * 有抖音作者锚点时禁止「仅 SEO / 仅内链」入库：link_data 多为推荐位，无法校验 author，会误绑当前 account。
+       * 详情须由带 `author` 且通过 `awemeAuthorMatchesBizAccount` 的列表/详情抓包提供。
+       */
+      if (dbg) {
+        dbg.dropped_douyin_anchor_no_detail += 1;
+      }
       continue;
     }
     const merged: Record<string, unknown> = {
@@ -1152,13 +1458,30 @@ export function buildBizVideoRowsFromCaptures(
     merged.dy_video_url = canonicalDouyinVideoUrl(id);
     merged.dy_title = sanitizeDyTitle(merged.dy_title) ?? null;
     if (mergedBizVideoRowLooksLikeNonVideo(merged)) {
+      if (dbg) {
+        dbg.dropped_non_video += 1;
+      }
       continue;
     }
     if (listMode === "recent_72h" && !rowMatchesRecentWindow(merged, anchorTimeMs, recentWindowHours)) {
+      if (dbg) {
+        dbg.dropped_recent_window += 1;
+      }
       continue;
     }
-    if (authorStrict && !mergedBizVideoRowHasMinimalMediaSignal(merged)) {
-      continue;
+    if (mergeQualityStrict && !mergedBizVideoRowHasMinimalMediaSignal(merged)) {
+      const allowSeoHomepageFallback =
+        Boolean(pickStr(params.dy_homepage_url)?.trim()) &&
+        detail == null &&
+        seo != null &&
+        pickStr(merged.dy_video_id) &&
+        pickStr(merged.dy_video_url);
+      if (!allowSeoHomepageFallback) {
+        if (dbg) {
+          dbg.dropped_minimal_media_signal += 1;
+        }
+        continue;
+      }
     }
     if (accountId && !pickStr(merged.account_id)) {
       merged.account_id = accountId;
@@ -1182,6 +1505,7 @@ export function buildBizVideoRowsFromCaptures(
 /** 单轮 task-rule 扁平 captures 的顶层 key；与 RunnerLoop `aggregateCaptures[accountId]` 分桶结构互斥。 */
 const BIZ_VIDEO_FLAT_CAPTURE_TOP_KEYS = new Set([
   "dy_latest_video_payload",
+  "dy_seo_inner_link_payload",
   "dy_video_list_payload",
   "video_list_payload",
   "dy_video_detail_payload",
@@ -1199,7 +1523,11 @@ export function bizVideoCapturesLooksLikeFlatRunnerBucket(captures: Record<strin
 
 export function buildBizVideoRowsFromPerAccountCapturesMap(
   capturesByAccountId: Record<string, unknown>,
-  options?: { syncBatchId?: string | null; params?: Record<string, unknown> },
+  options?: {
+    syncBatchId?: string | null;
+    params?: Record<string, unknown>;
+    derivationDebug?: BizVideoRowDerivationDebug;
+  },
 ): Record<string, unknown>[] {
   const taskParams = options?.params ?? {};
   const syncBatchId = options?.syncBatchId ?? null;
@@ -1214,7 +1542,13 @@ export function buildBizVideoRowsFromPerAccountCapturesMap(
       account_id: accountId,
       target_account_id: accountId,
     };
-    out.push(...buildBizVideoRowsFromCaptures(cap, { syncBatchId, params: perParams }));
+    out.push(
+      ...buildBizVideoRowsFromCaptures(cap, {
+        syncBatchId,
+        params: perParams,
+        derivationDebug: options?.derivationDebug,
+      }),
+    );
   }
   return out;
 }
@@ -1437,7 +1771,11 @@ export function buildRowsFromHighDiveLeadDailyCaptures(
 export function buildRowsFromCapturesByIngestTarget(
   mappingTarget: string,
   captures: Record<string, unknown>,
-  options?: { syncBatchId?: string | null; params?: Record<string, unknown> },
+  options?: {
+    syncBatchId?: string | null;
+    params?: Record<string, unknown>;
+    derivationDebug?: BizVideoRowDerivationDebug;
+  },
 ): Record<string, unknown>[] {
   const tgt = mappingTarget.trim();
   if (tgt === "employee_personal_auth") {

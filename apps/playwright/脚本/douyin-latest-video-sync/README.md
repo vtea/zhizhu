@@ -1,4 +1,4 @@
-# 抖音最新视频同步规则
+# 抖音视频同步规则
 
 ## 1) 这条规则做什么
 
@@ -34,15 +34,26 @@
    - `POST /api/v1/tenants/:tenant/runner/file-rule-ingest`
 5. API 侧 `dispatchFileRuleIngest` 路由到 `biz_video` 入库，返回 `written/skipped/skip_reasons`。
 
+#### 2.2.1 规则步骤与 captures 语义（rule.json）
+
+- **`dy_latest_video_payload`（累加）**：主页列表相关接口，含 SEO `seo/inner/link`、`/aweme/v1/web/aweme/post/`、`/aweme/v2/web/aweme/post/` 等；入库解析会深扫这些 JSON（及 SEO 链接块）。
+- **`dy_video_detail_payload`（累加）**：仅详情类路径 **`/aweme/v[12]/web/(aweme/detail|note/detail|note/info)/`**，**不包含**列表用的 `aweme/post`，避免与列表接口重复灌入同一 key。
+- **滚动加载**：`paginate` 使用 `scroll_capture_wait: "response"`，每次滚动后等待列表抓包计数增长（有超时与二轮重试；仍可用「暂时没有更多了」等文案提前结束）。
+- **Best-effort 步骤（`optional: true`）**：切到「作品」Tab、等待多一包、读取主页作品数 DOM、滚动后再等一包、点击首条视频/图文、等待详情多一包。任一步超时**不导致规则失败**；任务仍可能仅靠列表抓包即 `ok: true`，此时互动指标可能依赖列表内嵌字段，详情独有字段可能不全。
+- **打开页到滚动的时延**：切 Tab 后「再等一包」若已停在「作品」且不再发起新列表请求，会一直等到该步 `timeout_ms`；规则对该步使用较短超时以尽快进入滚动与后续抓包（有意不换「多等一条列表请求」换整体速度）。覆盖率主要靠首屏与滚动加载。
+- **`expects_captures`**：用于文档/校验意图；`dy_video_detail_payload` 在未点开详情或网络未命中时可为空数组；`dy_profile_works_count_dom` 在 DOM 改版或未命中选择器时也可能缺失。
+
 ### 2.3 单模式参数约定
 
 - `single_account`
-  - 必要参数：`account_id`, `biz_video_list_mode`
+  - 必要参数：`biz_video_list_mode`，以及 **`account_id` 与 `target_account_id` 至少填其一**（与入库 `buildBizVideoRowsFromCaptures` 一致）
   - 建议参数：`dy_homepage_url`（优先作为采集入口）
   - 可选参数：`target_dy_unique_id`（入库前用于反查账号绑定）
 - `enterprise_all_accounts`
   - 必要参数：`account_ids[]`, `biz_video_list_mode`
   - 建议参数：`dy_leads_enterprise_id`
+
+`meta.json` 中 `params_schema` 对 `mode === single_account` 要求 **`params.account_id` 与 `params.target_account_id` 至少其一存在**，对 `enterprise_all_accounts` 要求 **`account_ids` 非空数组**。若任务仅在同任务的顶层字段带业务账号 id、而 `params` 未写（依赖 Runner 注入），须确保 Runner 在执行前合并为 `account_id` 或 `target_account_id`，否则静态 Schema 校验可能不通过。
 
 视频范围参数：
 - `biz_video_list_mode = "full"`：尽量采集主页全部视频；Runner 会提升滚动页上限，入库按 `dy_video_id` UPSERT（库里已有自动更新）。
@@ -52,7 +63,8 @@
 
 入口优先级说明：
 - 若传 `dy_homepage_url`，规则优先打开该主页；
-- 未传则回退规则默认短链（当前默认：`https://v.douyin.com/_BGGvmgBay8/`）。
+- 未传时由 Runner 按 `account_id` / `account_ids` 从员工档案合并主页 URL；
+- 若既无 `dy_homepage_url` 也无法从账号档案合并主页，任务会在执行前校验失败（不再回退默认短链）。
 - 已传 `dy_homepage_url` 时，不再执行“再次点击 `/user/` 跳主页”的兼容动作，避免命中页面内非目标账号链接导致跑偏。
 - `biz_video_collect_scope`（可选，默认 `latest_n`）：`latest_n` 只按 `limit_n` 入库，不对「主页展示的作品总数」做单次任务遗漏告警；`profile_total` 在以 DOM 读到作品数前提下，若本次抓包合并后的去重条数仍少于该数，会在任务/试跑结案 `result_summary` 中标记 `coverage_gap` 并附人话摘要。未出现在抓包里的「缺条」视频无法可靠生成链接；已入库跳过类问题会尽量从 `ingest_skip_details.identity` 带出 `dy_video_url` / `dy_video_id` 示例。
 
@@ -92,7 +104,7 @@ Runner 将 captures 转为 `biz_video` 行时（`buildBizVideoRowsFromCaptures`�
 任务中心创建任务会写入 `payload.params`：
 
 - 单账号：
-  - `mode + account_id + biz_video_list_mode + biz_video_recent_hours + limit_n`
+  - `mode + (account_id 或 target_account_id) + biz_video_list_mode + biz_video_recent_hours + limit_n`
   - 可附加：`dy_homepage_url + target_dy_unique_id`
 - 全账号：
   - `mode + account_ids + biz_video_list_mode + biz_video_recent_hours + limit_n`
@@ -171,7 +183,7 @@ Runner 将 captures 转为 `biz_video` 行时（`buildBizVideoRowsFromCaptures`�
 
 说明：
 - 当主页仅返回链接聚合时，规则会先产出最小字段（`dy_video_id/dy_video_url/dy_title`）。
-- 若命中详情接口（`/aweme/v1/web/aweme/detail/`），会自动补齐播放、点赞、评论、收藏、分享、时长等指标字段。
+- 若命中详情接口（路径形如 `/aweme/v1/web/aweme/detail/`、`note/detail` 等，或 v2 同源路径），会自动补齐播放、点赞、评论、收藏、分享、时长等指标字段。
 
 ---
 
@@ -194,3 +206,6 @@ Runner 将 captures 转为 `biz_video` 行时（`buildBizVideoRowsFromCaptures`�
 
 5. `result_summary` 里 `profile_works_count_dom` 为空  
    - 「作品」tab 未出现或 DOM 改版时 `captureDomAssign` 会跳过（optional），对账仍可进行但缺少主页作品数参照；可改规则选择器或先在 headed 下确认页面结构。
+
+6. 任务成功但互动指标偏少或详情字段缺失  
+   - 可能未命中详情抓包（首条点击失败或 `wait_video_detail_payload` optional 超时）。列表 JSON 中若已有 `statistics` 等，仍会部分入库；需更强指标时在 headed 下确认是否打开单条视频页并观察 Network 是否出现 `aweme/detail` 类请求。

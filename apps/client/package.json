@@ -7,12 +7,13 @@
   "main": "dist/main.js",
   "scripts": {
     "build:client": "npm run build",
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && npm run build:css && npm run build:renderer",
+    "build": "npm --prefix ../../packages/playwright-rule-schema run build && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && npm run build:css && npm run build:renderer",
     "build:css": "tailwindcss -i src/renderer/styles.css -o dist/styles.css --minify",
     "build:renderer": "esbuild src/renderer/main.tsx --bundle --format=iife --platform=browser --outfile=dist/renderer.js --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --sourcemap",
     "watch": "tsc -p tsconfig.json -w",
     "watch:css": "tailwindcss -i src/renderer/styles.css -o dist/styles.css --watch",
     "watch:renderer": "esbuild src/renderer/main.tsx --bundle --format=iife --platform=browser --outfile=dist/renderer.js --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --sourcemap --watch",
+    "test": "tsx --test src/taskRuleHardTimeout.unit.test.ts src/bizVideoDouyinAnchorInfer.unit.test.ts",
     "start": "npm run build && electron .",
     "dev": "npm run start",
     "pack:mac": "npm run build && electron-builder --mac dmg --publish never",
@@ -36,6 +37,7 @@
     "electron-builder": "^24.13.3",
     "esbuild": "^0.25.2",
     "tailwindcss": "^4.1.4",
+    "tsx": "^4.19.2",
     "typescript": "~5.8.0"
   },
   "build": {

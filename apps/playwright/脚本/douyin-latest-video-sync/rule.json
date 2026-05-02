@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "title": "抖音最新视频同步",
-  "description": "进入短视频页并抓取列表与详情接口响应；Runner 按 limit_n 裁剪后，客户端将 dy_video_url 规范为 www.douyin.com/video/{id}、标题去 # 话题，并在提供 account_id / target_* 等参数时按 aweme.author 过滤非本人视频；SEO 推荐类 link_type 在入库侧丢弃。尽量触发作品列表与详情请求以便有 author 与正文。",
-  "expects_captures": ["dy_latest_video_payload", "dy_video_detail_payload", "dy_profile_works_count_dom"],
+  "title": "抖音视频同步",
+  "description": "进入主页并抓取列表与详情：① dy_latest_video_payload **仅**累加本人作品列表接口 `/aweme/v1/web/aweme/post/`、`/aweme/v2/web/aweme/post/`（避免与 SEO 混桶）；② `seo/inner/link` 单独写入 dy_seo_inner_link_payload（侧栏/精选/外链推荐，入库侧仅用于 SEO link_data 解析，不参与 deep 扫描）；详情匹配 aweme/detail、note/detail、note/info → dy_video_detail_payload。Runner 按 limit_n 裁剪；客户端规范 URL、按作者锚点过滤；SEO link_type 过滤见入库逻辑。尽量触发作品 Tab、滚动、首条详情；部分步骤 optional。",
+  "expects_captures": ["dy_latest_video_payload", "dy_seo_inner_link_payload", "dy_video_detail_payload", "dy_profile_works_count_dom"],
   "steps": [
     {
       "type": "captureResponse",
       "step_id": "capture_video_list_from_shortlink_seo",
       "url_pattern": "/aweme/v1/web/seo/inner/link/",
-      "key": "dy_latest_video_payload",
+      "key": "dy_seo_inner_link_payload",
       "accumulate": true
     },
     {
@@ -20,8 +20,15 @@
     },
     {
       "type": "captureResponse",
+      "step_id": "capture_video_list_post_v2",
+      "url_pattern": "/aweme/v2/web/aweme/post/",
+      "key": "dy_latest_video_payload",
+      "accumulate": true
+    },
+    {
+      "type": "captureResponse",
       "step_id": "capture_video_detail_payload",
-      "url_pattern": "/aweme/v1/web/(aweme/detail|note/detail|note/info|aweme/post)/",
+      "url_pattern": "/aweme/v\\d+/web/(aweme/detail|note/detail|note/info)/",
       "url_pattern_is_regex": true,
       "key": "dy_video_detail_payload",
       "accumulate": true
@@ -30,12 +37,14 @@
       "type": "goto",
       "step_id": "goto_video_page",
       "url": "{{dy_homepage_url}}",
-      "waitUntil": "domcontentloaded"
+      "waitUntil": "domcontentloaded",
+      "nav_retry_count": 2,
+      "nav_retry_backoff_ms": 1000
     },
     {
       "type": "abortIfVisible",
       "step_id": "abort_if_douyin_login_wall",
-      "timeout_ms": 6000,
+      "timeout_ms": 2800,
       "message": "抖音页面要求登录。请在当前 Playwright 浏览器配置（本机登录态）中登录抖音后，再重新执行采集。",
       "selector": {
         "kind": "css",
@@ -68,7 +77,7 @@
       "response_key": "dy_latest_video_payload",
       "accumulate_grow_by": 1,
       "optional": true,
-      "timeout_ms": 30000
+      "timeout_ms": 6500
     },
     {
       "type": "captureDomAssign",
@@ -76,7 +85,7 @@
       "key": "dy_profile_works_count_dom",
       "optional": true,
       "parse": "int",
-      "timeout_ms": 12000,
+      "timeout_ms": 4000,
       "selector": {
         "kind": "css",
         "value": "[data-e2e='user-tab-count-item']:has-text('作品') [data-e2e='user-tab-count']",
@@ -90,6 +99,12 @@
       "scroll_pixels": 2200,
       "limit_pages": 40,
       "step_wait_ms": 1200,
+      "scroll_capture_wait": "response",
+      "scroll_end_if_visible": {
+        "kind": "css",
+        "value": "text=暂时没有更多了",
+        "fallbacks": [{ "kind": "css", "value": "text=没有更多了" }]
+      },
       "wait_capture_key": "dy_latest_video_payload",
       "wait_capture_timeout_ms": 8000,
       "wait_capture_retry_timeout_ms": 12000
@@ -100,7 +115,7 @@
       "response_key": "dy_latest_video_payload",
       "accumulate_grow_by": 1,
       "optional": true,
-      "timeout_ms": 30000
+      "timeout_ms": 9000
     },
     {
       "type": "click",

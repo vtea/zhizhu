@@ -301,6 +301,34 @@ export async function changeConsoleUserPassword(
   return { ok: true };
 }
 
+/**
+ * 敏感操作二次校验：验证当前 JWT `sub`（邮箱或用户名）对应的控制台登录密码。
+ */
+export async function verifyConsoleUserPassword(
+  tenantId: string,
+  subFromJwt: string,
+  password: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const tid = normTenantId(tenantId);
+  const loginTrim = typeof subFromJwt === "string" ? subFromJwt.trim() : "";
+  if (!tid || !loginTrim) {
+    return { ok: false, error: "会话无效" };
+  }
+  if (!password) {
+    return { ok: false, error: "密码必填" };
+  }
+  const row = await findConsoleUserRow(tid, loginTrim);
+  if (!row) {
+    return { ok: false, error: "未找到控制台用户" };
+  }
+  const salt = String(row.password_salt ?? "");
+  const hash = String(row.password_hash ?? "");
+  if (!verifyPassword(password, salt, hash)) {
+    return { ok: false, error: "当前密码错误" };
+  }
+  return { ok: true };
+}
+
 export async function loginConsoleUser(
   tenantId: string,
   loginIdentifierRaw: string,

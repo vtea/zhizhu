@@ -1,6 +1,10 @@
 export { RuleError, RULE_ERROR_CODES, type RuleErrorCode } from "./errors";
+export {
+  buildCaptureDiagnostics,
+  dyListCaptureDiagnosticsForKey,
+} from "./captureDiagnostics";
 export { CaptureBucket, registerCapture, type CaptureSpec, type CaptureResult } from "./capture";
-export { resolveLocator, waitForLocator, describe } from "./selectors";
+export { resolveLocator, waitForLocator, describe, isAnySelectorVisible } from "./selectors";
 export {
   runRule,
   type RunRuleOptions,

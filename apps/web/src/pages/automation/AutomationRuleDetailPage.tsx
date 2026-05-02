@@ -13,6 +13,7 @@ import {
   type UpdateAutomationRuleDeviceDraftPayload,
 } from "@/api/rules";
 import { useTenantId } from "@/hooks/useTenantId";
+import { normalizeBizAccountIdField } from "@/lib/bizAccountId";
 import { formatDateTime } from "@/lib/format";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,7 +35,7 @@ export function AutomationRuleDetailPage() {
   const [paramAccountId, setParamAccountId] = useState("");
   const [paramEnterpriseId, setParamEnterpriseId] = useState("");
   const [paramLimitN, setParamLimitN] = useState("20");
-  const [paramBizVideoListMode, setParamBizVideoListMode] = useState<"full" | "recent_72h">("recent_72h");
+  const [paramBizVideoListMode, setParamBizVideoListMode] = useState<"full" | "recent_72h">("full");
   const [paramBizVideoRecentHours, setParamBizVideoRecentHours] = useState("72");
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
@@ -57,8 +58,36 @@ export function AutomationRuleDetailPage() {
     }
     return rows.filter((r) => r.rule_id === ruleId);
   }, [dispatchQ.data, ruleId]);
-
   const rule = ruleQ.data;
+  const isDouyinLatestVideoRule = useMemo(() => {
+    const id = (rule?.rule_id ?? ruleId ?? "").trim();
+    if (id === "douyin-latest-video-sync") {
+      return true;
+    }
+    const ruleName = (rule?.name ?? "").trim();
+    if (ruleName.includes("抖音") || ruleName.toLowerCase().includes("douyin")) {
+      return true;
+    }
+    const meta = rule?.meta;
+    if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+      return false;
+    }
+    const m = meta as Record<string, unknown>;
+    const topRuleId = typeof m.rule_id === "string" ? m.rule_id.trim() : "";
+    if (topRuleId === "douyin-latest-video-sync") {
+      return true;
+    }
+    const bundle = m.bundle;
+    if (bundle && typeof bundle === "object" && !Array.isArray(bundle)) {
+      const bundleRuleId = typeof (bundle as Record<string, unknown>).rule_id === "string"
+        ? ((bundle as Record<string, unknown>).rule_id as string).trim()
+        : "";
+      if (bundleRuleId === "douyin-latest-video-sync") {
+        return true;
+      }
+    }
+    return false;
+  }, [rule?.rule_id, rule?.name, rule?.meta, ruleId]);
 
   useEffect(() => {
     if (!rule) {
@@ -83,26 +112,38 @@ export function AutomationRuleDetailPage() {
         : {};
     const modeRaw = typeof defaults.mode === "string" ? defaults.mode : "";
     setParamMode(modeRaw === "enterprise_all_accounts" ? "enterprise_all_accounts" : "single_account");
-    setParamAccountId(typeof defaults.account_id === "string" ? defaults.account_id : "");
+    setParamAccountId(normalizeBizAccountIdField(defaults.account_id));
     setParamEnterpriseId(typeof defaults.dy_leads_enterprise_id === "string" ? defaults.dy_leads_enterprise_id : "");
     const limitRaw = defaults.limit_n;
+    const limitCap = isDouyinLatestVideoRule ? 10000 : 100;
     if (typeof limitRaw === "number" && Number.isFinite(limitRaw)) {
-      setParamLimitN(String(Math.max(1, Math.min(10000, Math.trunc(limitRaw)))));
+      setParamLimitN(String(Math.max(1, Math.min(limitCap, Math.trunc(limitRaw)))));
     } else if (typeof limitRaw === "string" && limitRaw.trim().length > 0) {
       const n = Number(limitRaw);
-      setParamLimitN(Number.isFinite(n) ? String(Math.max(1, Math.min(10000, Math.trunc(n)))) : "20");
+      setParamLimitN(
+        Number.isFinite(n)
+          ? String(Math.max(1, Math.min(limitCap, Math.trunc(n))))
+          : isDouyinLatestVideoRule
+            ? "5000"
+            : "20",
+      );
     } else {
-      setParamLimitN("5000");
+      setParamLimitN(isDouyinLatestVideoRule ? "5000" : "20");
     }
-    const listModeRaw = typeof defaults.biz_video_list_mode === "string" ? defaults.biz_video_list_mode.trim() : "";
-    setParamBizVideoListMode(listModeRaw === "full" ? "full" : "recent_72h");
-    const recentHoursRaw = defaults.biz_video_recent_hours;
-    if (typeof recentHoursRaw === "number" && Number.isFinite(recentHoursRaw)) {
-      setParamBizVideoRecentHours(String(Math.max(1, Math.min(720, Math.trunc(recentHoursRaw)))));
-    } else if (typeof recentHoursRaw === "string" && recentHoursRaw.trim().length > 0) {
-      const n = Number(recentHoursRaw);
-      setParamBizVideoRecentHours(Number.isFinite(n) ? String(Math.max(1, Math.min(720, Math.trunc(n)))) : "72");
+    if (isDouyinLatestVideoRule) {
+      const listModeRaw = typeof defaults.biz_video_list_mode === "string" ? defaults.biz_video_list_mode.trim() : "";
+      setParamBizVideoListMode(listModeRaw === "recent_72h" ? "recent_72h" : "full");
+      const recentHoursRaw = defaults.biz_video_recent_hours;
+      if (typeof recentHoursRaw === "number" && Number.isFinite(recentHoursRaw)) {
+        setParamBizVideoRecentHours(String(Math.max(1, Math.min(720, Math.trunc(recentHoursRaw)))));
+      } else if (typeof recentHoursRaw === "string" && recentHoursRaw.trim().length > 0) {
+        const n = Number(recentHoursRaw);
+        setParamBizVideoRecentHours(Number.isFinite(n) ? String(Math.max(1, Math.min(720, Math.trunc(n)))) : "72");
+      } else {
+        setParamBizVideoRecentHours("72");
+      }
     } else {
+      setParamBizVideoListMode("full");
       setParamBizVideoRecentHours("72");
     }
     try {
@@ -115,7 +156,7 @@ export function AutomationRuleDetailPage() {
     } catch {
       setMetaText("{}");
     }
-  }, [rule]);
+  }, [rule, isDouyinLatestVideoRule]);
 
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -135,18 +176,23 @@ export function AutomationRuleDetailPage() {
         mode: paramMode,
         ...(paramAccountId.trim() ? { account_id: paramAccountId.trim() } : {}),
         ...(paramEnterpriseId.trim() ? { dy_leads_enterprise_id: paramEnterpriseId.trim() } : {}),
-        biz_video_list_mode: paramBizVideoListMode,
-        biz_video_recent_hours: (() => {
-          const n = Number(paramBizVideoRecentHours);
-          if (!Number.isFinite(n) || n < 1 || n > 720) {
-            throw new Error("biz_video_recent_hours 须为 1-720 的整数");
-          }
-          return Math.trunc(n);
-        })(),
+        ...(isDouyinLatestVideoRule
+          ? {
+              biz_video_list_mode: paramBizVideoListMode,
+              biz_video_recent_hours: (() => {
+                const n = Number(paramBizVideoRecentHours);
+                if (!Number.isFinite(n) || n < 1 || n > 720) {
+                  throw new Error("biz_video_recent_hours 须为 1-720 的整数");
+                }
+                return Math.trunc(n);
+              })(),
+            }
+          : {}),
         limit_n: (() => {
           const n = Number(paramLimitN);
-          if (!Number.isFinite(n) || n < 1 || n > 10000) {
-            throw new Error("limit_n 须为 1-10000 的整数");
+          const maxN = isDouyinLatestVideoRule ? 10000 : 100;
+          if (!Number.isFinite(n) || n < 1 || n > maxN) {
+            throw new Error(isDouyinLatestVideoRule ? "limit_n 须为 1-10000 的整数" : "limit_n 须为 1-100 的整数");
           }
           return Math.trunc(n);
         })(),
@@ -290,35 +336,39 @@ export function AutomationRuleDetailPage() {
                         inputMode="numeric"
                         value={paramLimitN}
                         onChange={(ev) => setParamLimitN(ev.target.value.replace(/\D/g, ""))}
-                        placeholder="1-10000"
+                        placeholder={isDouyinLatestVideoRule ? "1-10000" : "1-100"}
                       />
                     )}
                   </Field>
-                  <Field label="biz_video_list_mode">
-                    {({ id }) => (
-                      <TextInput
-                        id={id}
-                        mono
-                        value={paramBizVideoListMode}
-                        onChange={(ev) =>
-                          setParamBizVideoListMode(ev.target.value.trim() === "full" ? "full" : "recent_72h")
-                        }
-                        placeholder="full | recent_72h"
-                      />
-                    )}
-                  </Field>
-                  <Field label="biz_video_recent_hours（recent 模式）">
-                    {({ id }) => (
-                      <TextInput
-                        id={id}
-                        mono
-                        inputMode="numeric"
-                        value={paramBizVideoRecentHours}
-                        onChange={(ev) => setParamBizVideoRecentHours(ev.target.value.replace(/\D/g, ""))}
-                        placeholder="1-720"
-                      />
-                    )}
-                  </Field>
+                  {isDouyinLatestVideoRule ? (
+                    <>
+                      <Field label="biz_video_list_mode">
+                        {({ id }) => (
+                          <TextInput
+                            id={id}
+                            mono
+                            value={paramBizVideoListMode}
+                            onChange={(ev) =>
+                              setParamBizVideoListMode(ev.target.value.trim() === "full" ? "full" : "recent_72h")
+                            }
+                            placeholder="full | recent_72h"
+                          />
+                        )}
+                      </Field>
+                      <Field label="biz_video_recent_hours（recent 模式）">
+                        {({ id }) => (
+                          <TextInput
+                            id={id}
+                            mono
+                            inputMode="numeric"
+                            value={paramBizVideoRecentHours}
+                            onChange={(ev) => setParamBizVideoRecentHours(ev.target.value.replace(/\D/g, ""))}
+                            placeholder="1-720"
+                          />
+                        )}
+                      </Field>
+                    </>
+                  ) : null}
                   <Field label="account_id（单账号模式）">
                     {({ id }) => (
                       <TextInput

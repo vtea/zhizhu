@@ -1,6 +1,12 @@
 /**
  * 抖音最新视频同步：按账号补齐 `dy_homepage_url`（纯函数，主进程与 renderer 共用）。
  */
+import { normalizeBizVideoParamAccountId } from "./bizVideoIngestParams";
+import {
+  canonicalizeDouyinUserHomepageUrlSync,
+  extractDouyinUserSecUidFromCanonicalHomepageUrl,
+} from "./douyinUserHomepageCanonical";
+
 export const DEFAULT_DOUYIN_LATEST_VIDEO_SYNC_GOTO_URL = "https://v.douyin.com/_BGGvmgBay8/";
 
 export const MISSING_DY_HOMEPAGE_MESSAGE =
@@ -19,7 +25,7 @@ function accountRowForMerge(
     return undefined;
   }
   return accounts.find((a) => {
-    const id = typeof a.account_id === "string" ? a.account_id.trim().toLowerCase() : "";
+    const id = normalizeBizVideoParamAccountId(a.account_id).toLowerCase();
     return id.length > 0 && id === needle;
   });
 }
@@ -28,15 +34,39 @@ function accountRowForMerge(
  * `account_id` 常为租户内 UUID，与抖音 author.uid 不一致；作者过滤需 `target_dy_unique_id`（号）或 `target_author_uid`（数字 uid）。
  * 库内 `dy_unique_id` 可能是短号或纯数字 uid，按形态写入对应字段，避免详情 JSON 被 awemeAuthorMatches 全部丢弃。
  */
+function supplementTargetAnchorFromHomepageUrl(
+  next: Record<string, unknown>,
+  row: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const home = typeof next.dy_homepage_url === "string" ? next.dy_homepage_url.trim() : "";
+  const sec = home.length > 0 ? extractDouyinUserSecUidFromCanonicalHomepageUrl(home) : "";
+  if (!sec) {
+    return next;
+  }
+  const hasRowDyUnique =
+    row != null && typeof row.dy_unique_id === "string" && row.dy_unique_id.trim().length > 0;
+  if (hasRowDyUnique) {
+    return next;
+  }
+  const hasUidAnchor =
+    typeof next.target_author_uid === "string" && next.target_author_uid.trim().length > 0;
+  const hasUniqueAnchor =
+    typeof next.target_dy_unique_id === "string" && next.target_dy_unique_id.trim().length > 0;
+  if (!hasUidAnchor && !hasUniqueAnchor) {
+    return { ...next, target_dy_unique_id: sec.toLowerCase() };
+  }
+  return next;
+}
+
 function attachTargetDyUniqueFromRow(
   params: Record<string, unknown>,
   row: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   if (!row) {
-    return params;
+    return supplementTargetAnchorFromHomepageUrl({ ...params }, undefined);
   }
   /** 常与抖音 author.uid 一致；租户若用 UUID 作 account_id，则不会是纯数字，不会误写入。 */
-  const acc = typeof row.account_id === "string" ? row.account_id.trim() : "";
+  const acc = normalizeBizVideoParamAccountId(row.account_id);
   const raw = typeof row.dy_unique_id === "string" ? row.dy_unique_id.trim() : "";
   /**
    * 必须与当前 merge 的 `account_id` 行一致：任务 params 里可能残留「另一员工」的 target_*（甚至两个字段都齐），
@@ -78,7 +108,7 @@ function attachTargetDyUniqueFromRow(
       next.target_author_uid = acc;
     }
   }
-  return next;
+  return supplementTargetAnchorFromHomepageUrl(next, row);
 }
 
 /**
@@ -106,16 +136,18 @@ export function mergeDyHomepageUrlIntoParams(
   const row = accountRowForMerge(accountIdForRun, accounts);
   const fromProfile = row && typeof row.dy_user_url === "string" ? row.dy_user_url.trim() : "";
   if (fromProfile.length > 0) {
+    const canonHome = canonicalizeDouyinUserHomepageUrlSync(fromProfile);
     return {
       ok: true,
-      params: attachTargetDyUniqueFromRow({ ...params, dy_homepage_url: fromProfile }, row),
+      params: attachTargetDyUniqueFromRow({ ...params, dy_homepage_url: canonHome }, row),
     };
   }
   const raw = params.dy_homepage_url;
   if (typeof raw === "string" && raw.trim().length > 0) {
+    const canonHome = canonicalizeDouyinUserHomepageUrlSync(raw.trim());
     return {
       ok: true,
-      params: attachTargetDyUniqueFromRow({ ...params, dy_homepage_url: raw.trim() }, row),
+      params: attachTargetDyUniqueFromRow({ ...params, dy_homepage_url: canonHome }, row),
     };
   }
   if (allowDefaultFallback) {

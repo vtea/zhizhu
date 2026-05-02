@@ -216,6 +216,84 @@ function normalizeAutomationRuleBodyFromApi(raw: unknown): unknown {
   return raw;
 }
 
+const KNOWN_CURRENT_STEP_TYPES = new Set([
+  "abortIfVisible",
+  "goto",
+  "setDateRange",
+  "clickTab",
+  "click",
+  "paginate",
+  "collectTable",
+  "captureResponse",
+  "captureDomAssign",
+  "wait",
+  "clearCaptureAccumulate",
+]);
+
+function extractRejectedStepTypeFromValidateErr(validateErr: string): string | null {
+  const m = validateErr.match(/steps\[\d+\]\.type=(['"])([^'"]+)\1 不在允许集合/);
+  if (!m || typeof m[2] !== "string") {
+    return null;
+  }
+  const t = m[2].trim();
+  return t.length > 0 ? t : null;
+}
+
+function extractRejectedStepIndexFromValidateErr(validateErr: string): number | null {
+  const m = validateErr.match(/steps\[(\d+)\]/);
+  if (!m || typeof m[1] !== "string") {
+    return null;
+  }
+  const n = Number(m[1]);
+  if (!Number.isInteger(n) || n < 0) {
+    return null;
+  }
+  return n;
+}
+
+/**
+ * 兼容兜底：远端规则已合法，但本机偶发读到旧版 schema（或依赖缓存抖动）时，
+ * 会误报「captureDomAssign 不在允许集合」「goto.url 格式无效（占位符）」
+ * 并导致 published body 被跳过缓存。这里仅对已知历史误判做放行，避免规则功能受损。
+ */
+function isKnownSchemaCompatFalseNegative(validateErr: string, bodyRaw: unknown): boolean {
+  if (!bodyRaw || typeof bodyRaw !== "object" || Array.isArray(bodyRaw)) {
+    return false;
+  }
+  const steps = (bodyRaw as Record<string, unknown>).steps;
+  if (!Array.isArray(steps)) {
+    return false;
+  }
+  const rejectedStepIdx = extractRejectedStepIndexFromValidateErr(validateErr);
+  const rejectedType = extractRejectedStepTypeFromValidateErr(validateErr);
+  if (
+    rejectedType &&
+    rejectedStepIdx != null &&
+    KNOWN_CURRENT_STEP_TYPES.has(rejectedType) &&
+    rejectedStepIdx < steps.length
+  ) {
+    const badStep = steps[rejectedStepIdx];
+    if (badStep && typeof badStep === "object" && !Array.isArray(badStep)) {
+      if ((badStep as Record<string, unknown>).type === rejectedType) {
+        return true;
+      }
+    }
+  }
+  if (validateErr.includes("(goto).url 格式无效") && rejectedStepIdx != null && rejectedStepIdx < steps.length) {
+    const badStep = steps[rejectedStepIdx];
+    if (badStep && typeof badStep === "object" && !Array.isArray(badStep)) {
+      const step = badStep as Record<string, unknown>;
+      if (step.type === "goto") {
+        const url = typeof step.url === "string" ? step.url : "";
+        if (url.includes("{{") && url.includes("}}")) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 async function pullPublished(app: App, ctx: ApiContext): Promise<{ ok: true; pulled: number } | { ok: false; status: number; message: string }> {
   const r = await httpJson<PublishedListItem[] | { items?: PublishedListItem[] }>(ctx, "GET", "/runner/automation-rules");
   if (!r.ok) {
@@ -273,12 +351,17 @@ async function pullPublished(app: App, ctx: ApiContext): Promise<{ ok: true; pul
       coerceAutomationRuleSchemaVersionInPlace(bodyRaw as Record<string, unknown>);
     }
     const validateErr = validateRuleBody(bodyRaw);
-    if (validateErr) {
+    if (validateErr && !isKnownSchemaCompatFalseNegative(validateErr, bodyRaw)) {
       console.warn(
         `[zhizhu-client] automation rule GET body 跳过缓存：${cur.rule_id} schema 不认：${validateErr}`,
       );
       /** 本机 schema 不识别远端版本 → 跳过 body 缓存（不阻塞 pull 列表） */
       continue;
+    }
+    if (validateErr) {
+      console.warn(
+        `[zhizhu-client] automation rule GET body 兼容放行：${cur.rule_id}（本机校验误判：${validateErr}）`,
+      );
     }
     /** 方案 B：把 mapping/meta 一并写入缓存；下层 trial / runner-loop 会优先用缓存里的 bundle */
     const mapping =

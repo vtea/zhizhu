@@ -3,7 +3,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { Banner, Button, Field, OverlaySectionCard, SelectInput, TextInput } from "@/components/ui";
 import {
   createBizAccount,
-  deleteBizAccount,
+  deleteBizAccountWithConfirm,
+  fetchBizAccountAssociationCounts,
   listAccounts,
   listAllAccounts,
   updateBizAccount,
@@ -51,6 +52,11 @@ export function StaffAccountsPage() {
   const [createFormOpen, setCreateFormOpen] = useState(false);
   /** 表格级操作（如直接点删除）错误；formErr 仍用于新建/编辑表单内 */
   const [tableActionErr, setTableActionErr] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<MockAccount | null>(null);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteConfirmDetach, setDeleteConfirmDetach] = useState(false);
+  const [deleteDialogErr, setDeleteDialogErr] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["accounts", tenantId, tab, selectedDyLeadsEnterpriseId ?? null],
@@ -173,27 +179,64 @@ export function StaffAccountsPage() {
     },
   });
 
-  const delAccMut = useMutation({
-    mutationFn: (p: { platform: string; accountId: string }) => deleteBizAccount(tenantId, p.platform, p.accountId),
+  const assocCountsQuery = useQuery({
+    queryKey: ["account-delete-assoc", tenantId, deleteTarget?.platform, deleteTarget?.account_id],
+    queryFn: () => fetchBizAccountAssociationCounts(tenantId, deleteTarget!.platform, deleteTarget!.account_id),
+    enabled: Boolean(api && deleteDialogOpen && deleteTarget),
+  });
+
+  const deleteConfirmMut = useMutation({
+    mutationFn: (p: { platform: string; accountId: string; password: string; confirm_detach: boolean }) =>
+      deleteBizAccountWithConfirm(tenantId, p.platform, p.accountId, {
+        password: p.password,
+        confirm_detach: p.confirm_detach,
+      }),
     onSuccess: async () => {
       setFormErr(null);
       setTableActionErr(null);
       setEditAccount(null);
+      setDeleteDialogOpen(false);
+      setDeleteTarget(null);
+      setDeletePassword("");
+      setDeleteConfirmDetach(false);
+      setDeleteDialogErr(null);
       await qc.invalidateQueries({ queryKey: ["accounts", tenantId] });
       await qc.invalidateQueries({ queryKey: ["accounts-all", tenantId] });
       await qc.invalidateQueries({ queryKey: ["accounts-ops-eligible", tenantId] });
       await qc.invalidateQueries({ queryKey: ["leads-enterprises-visible", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["account-delete-assoc", tenantId] });
     },
     onError: (e) => {
-      setTableActionErr(formatApiErrorMessage(e, "删除失败"));
+      setDeleteDialogErr(formatApiErrorMessage(e, "删除失败"));
     },
   });
+
+  const assocTotal = useMemo(() => {
+    const c = assocCountsQuery.data;
+    if (!c) {
+      return 0;
+    }
+    return c.leads + c.videos + c.tasks + c.placements;
+  }, [assocCountsQuery.data]);
+
+  const needsDetachConfirm = assocTotal > 0;
+  const deleteSubmitDisabled =
+    deleteConfirmMut.isPending ||
+    assocCountsQuery.isPending ||
+    assocCountsQuery.isError ||
+    !deletePassword.trim() ||
+    (needsDetachConfirm && !deleteConfirmDetach);
 
   function setTab(next: TabId) {
     setFormErr(null);
     setTableActionErr(null);
     setEditAccount(null);
     setCreateFormOpen(false);
+    setDeleteDialogOpen(false);
+    setDeleteTarget(null);
+    setDeletePassword("");
+    setDeleteConfirmDetach(false);
+    setDeleteDialogErr(null);
     const sp = new URLSearchParams(search);
     if (next === "enterprise_staff") {
       sp.delete("tab");
@@ -314,15 +357,18 @@ export function StaffAccountsPage() {
                   variant="danger"
                   size="sm"
                   disabled={
-                    delAccMut.isPending &&
-                    delAccMut.variables?.accountId === r.account_id &&
-                    delAccMut.variables?.platform === r.platform
+                    deleteConfirmMut.isPending &&
+                    deleteConfirmMut.variables?.accountId === r.account_id &&
+                    deleteConfirmMut.variables?.platform === r.platform
                   }
                   onClick={() => {
-                    if (confirm(`确定删除该抖音固定账号？若有线索或视频仍引用该账号，删除将失败。`)) {
-                      setTableActionErr(null);
-                      delAccMut.mutate({ platform: r.platform, accountId: r.account_id });
-                    }
+                    setFormErr(null);
+                    setTableActionErr(null);
+                    setDeleteTarget(r);
+                    setDeletePassword("");
+                    setDeleteConfirmDetach(false);
+                    setDeleteDialogErr(null);
+                    setDeleteDialogOpen(true);
                   }}
                 >
                   删除
@@ -572,6 +618,129 @@ export function StaffAccountsPage() {
                 {saveDetailMut.isPending ? "保存中…" : "保存"}
               </Button>
             </div>
+        </OverlaySectionCard>
+      ) : null}
+
+      {api ? (
+        <OverlaySectionCard
+          open={deleteDialogOpen}
+          onClose={() => {
+            if (deleteConfirmMut.isPending) {
+              return;
+            }
+            setDeleteDialogOpen(false);
+            setDeleteTarget(null);
+            setDeletePassword("");
+            setDeleteConfirmDetach(false);
+            setDeleteDialogErr(null);
+          }}
+          title="删除账号"
+          titleAs="h2"
+          className="sm:max-w-lg"
+          description={
+            deleteTarget ? (
+              <>
+                抖音固定账号 ID{" "}
+                <span className="font-mono text-zz-near">{deleteTarget.account_id}</span>
+              </>
+            ) : null
+          }
+        >
+          {deleteTarget ? (
+            <div className="grid gap-4">
+              {assocCountsQuery.isPending ? (
+                <p className="text-sm text-zz-muted">正在统计关联数据…</p>
+              ) : assocCountsQuery.isError ? (
+                <Banner kind="error">无法加载关联统计：{formatQueryError(assocCountsQuery.error)}</Banner>
+              ) : assocCountsQuery.data ? (
+                <div className="rounded-lg border border-zz-border-light bg-zz-surface-muted/40 px-4 py-3 text-sm">
+                  <p className="font-medium text-zz-near">关联数据概览</p>
+                  <ul className="mt-2 list-inside list-disc space-y-1 text-zz-muted">
+                    <li>线索：{assocCountsQuery.data.leads}</li>
+                    <li>视频：{assocCountsQuery.data.videos}</li>
+                    <li>任务：{assocCountsQuery.data.tasks}</li>
+                    <li>投放：{assocCountsQuery.data.placements}</li>
+                  </ul>
+                </div>
+              ) : null}
+
+              {needsDetachConfirm ? (
+                <label className="flex cursor-pointer items-start gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={deleteConfirmDetach}
+                    onChange={(ev) => setDeleteConfirmDetach(ev.target.checked)}
+                  />
+                  <span>
+                    解除关联并删除该账号（保留线索、视频、任务与投放等业务记录，引用迁至系统占位账号）
+                  </span>
+                </label>
+              ) : null}
+
+              <Field label="登录密码">
+                {({ id, describedBy }) => (
+                  <TextInput
+                    id={id}
+                    aria-describedby={describedBy}
+                    type="password"
+                    autoComplete="current-password"
+                    value={deletePassword}
+                    onChange={(ev) => setDeletePassword(ev.target.value)}
+                  />
+                )}
+              </Field>
+
+              {deleteDialogErr ? <Banner kind="error">{deleteDialogErr}</Banner> : null}
+
+              <div className="flex flex-wrap gap-2 pt-2">
+                <Button
+                  variant="danger"
+                  size="md"
+                  isLoading={deleteConfirmMut.isPending}
+                  disabled={deleteSubmitDisabled}
+                  onClick={() => {
+                    setDeleteDialogErr(null);
+                    if (!deleteTarget) {
+                      return;
+                    }
+                    if (needsDetachConfirm && !deleteConfirmDetach) {
+                      setDeleteDialogErr("请先勾选解除关联");
+                      return;
+                    }
+                    if (!deletePassword.trim()) {
+                      setDeleteDialogErr("请输入登录密码");
+                      return;
+                    }
+                    deleteConfirmMut.mutate({
+                      platform: deleteTarget.platform,
+                      accountId: deleteTarget.account_id,
+                      password: deletePassword,
+                      confirm_detach: deleteConfirmDetach,
+                    });
+                  }}
+                >
+                  {deleteConfirmMut.isPending ? "删除中…" : "确认删除"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="md"
+                  disabled={deleteConfirmMut.isPending}
+                  onClick={() => {
+                    setDeleteDialogOpen(false);
+                    setDeleteTarget(null);
+                    setDeletePassword("");
+                    setDeleteConfirmDetach(false);
+                    setDeleteDialogErr(null);
+                  }}
+                >
+                  取消
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-zz-muted">未选择账号</p>
+          )}
         </OverlaySectionCard>
       ) : null}
 

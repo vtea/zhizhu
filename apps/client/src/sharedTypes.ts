@@ -176,6 +176,14 @@ export type FileRuleSkipDetailDto = {
   hint?: { kind: string; label: string };
 };
 
+/** 试跑「仅重试入库」所需载荷（与 `postEmployeePersonalAuthFileRuleIngest` 参数一致） */
+export type AutomationRuleTrialIngestRetryPayload = {
+  taskId: string;
+  ingestRuleLabel: string;
+  rows: Record<string, unknown>[];
+  mapping: Record<string, unknown>;
+};
+
 /** 本机执行规则：`task-rule` 后与任务队列相同走 POST /runner/file-rule-ingest（须已绑定设备） */
 export type AutomationRuleTrialRunResultDto =
   | {
@@ -221,7 +229,7 @@ export type AutomationRuleTrialRunResultDto =
         biz_video_coverage_by_account?: Record<string, BizVideoCoverageSummaryDto>;
       };
     }
-  | { ok: false; error: string };
+  | { ok: false; error: string; ingestRetry?: AutomationRuleTrialIngestRetryPayload };
 
 export type AutomationRuleRunnerLoopStatusDto = {
   lastTaskId: string | null;

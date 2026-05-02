@@ -11,6 +11,25 @@ import { RuleError } from "./errors";
 
 const COUNT_PROBE_TIMEOUT_MS = 1500;
 
+/**
+ * 列表结束探测：`resolveLocator` 在未命中时会抛错；翻页早退只需「任一回可见」。
+ */
+export async function isAnySelectorVisible(sel: SelectorRef, scope: Page | Locator): Promise<boolean> {
+  const candidates: SelectorRef[] = [sel, ...(sel.fallbacks ?? [])];
+  for (const cand of candidates) {
+    try {
+      const locator = buildLocator(cand, scope);
+      const v = await locator.first().isVisible().catch(() => false);
+      if (v) {
+        return true;
+      }
+    } catch {
+      /* 下一候选 */
+    }
+  }
+  return false;
+}
+
 export async function resolveLocator(sel: SelectorRef, scope: Page | Locator, failedStep: number, stepType: string): Promise<Locator> {
   const candidates: SelectorRef[] = [sel, ...(sel.fallbacks ?? [])];
   let lastError: string | null = null;

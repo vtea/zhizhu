@@ -1,7 +1,7 @@
 /**
  * 抖音 latest-video-sync：主页 DOM 作品数 vs 抓包合并条数的对账摘要（任务结案 / 试跑展示）。
  */
-import { bizVideoCaptureParamsForIngest } from "./bizVideoIngestParams";
+import { bizVideoCaptureParamsForIngest, normalizeBizVideoParamAccountId } from "./bizVideoIngestParams";
 import { mergeDyHomepageUrlIntoParams } from "./bizVideoDyHomepageMerge";
 import {
   bizVideoCapturesLooksLikeFlatRunnerBucket,
@@ -229,7 +229,7 @@ export function buildBizVideoCoverageForAggregate(args: {
     const merged = mergeDyHomepageUrlIntoParams(pb, accountIdTrim, opsAcc, false);
     if (!merged.ok) continue;
     const rn = args.rowsForIngest.filter(
-      (r) => typeof r.account_id === "string" && r.account_id.trim() === accountIdTrim,
+      (r) => normalizeBizVideoParamAccountId(r.account_id) === accountIdTrim,
     ).length;
     const one = buildBizVideoCoverageSummary({
       captures: rawBucket as Record<string, unknown>,

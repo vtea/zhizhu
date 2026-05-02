@@ -1300,6 +1300,79 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    const assocCountsRoute = sub.match(/^\/accounts\/([^/]+)\/([^/]+)\/association-counts$/);
+    if (req.method === "GET" && assocCountsRoute) {
+      if (!canManageTenantAdmin(auth.payload)) {
+        sendJson(res, 403, { error: "需要 tenant_admin", code: "FORBIDDEN" });
+        return;
+      }
+      try {
+        const platform = decodeURIComponent(assocCountsRoute[1]);
+        const accountId = decodeURIComponent(assocCountsRoute[2]);
+        const counts = await writes.getBizAccountAssociationCounts(tenantId, platform, accountId);
+        sendJson(res, 200, { ok: true, association_counts: counts });
+        return;
+      } catch (e) {
+        sendBusinessOrInternalError(res, e);
+        return;
+      }
+    }
+
+    const delConfirmRoute = sub.match(/^\/accounts\/([^/]+)\/([^/]+)\/delete-with-confirm$/);
+    if (req.method === "POST" && delConfirmRoute) {
+      if (!canManageTenantAdmin(auth.payload)) {
+        sendJson(res, 403, { error: "需要 tenant_admin", code: "FORBIDDEN" });
+        return;
+      }
+      try {
+        const platform = decodeURIComponent(delConfirmRoute[1]);
+        const accountId = decodeURIComponent(delConfirmRoute[2]);
+        const body = (await readJsonBody(req)) as Record<string, unknown>;
+        const password = typeof body.password === "string" ? body.password : "";
+        const confirmDetach = body.confirm_detach === true;
+        if (!password.trim()) {
+          sendJson(res, 400, { error: "请输入登录密码以确认删除", code: "PASSWORD_REQUIRED" });
+          return;
+        }
+        const subJwt = typeof auth.payload?.sub === "string" ? auth.payload.sub : "";
+        const v = await consoleAuth.verifyConsoleUserPassword(tenantId, subJwt, password);
+        if (!v.ok) {
+          const code =
+            v.error === "当前密码错误"
+              ? "PASSWORD_INVALID"
+              : v.error === "未找到控制台用户"
+                ? "USER_NOT_FOUND"
+                : "AUTH_FAILED";
+          sendJson(res, 401, { error: v.error, code });
+          return;
+        }
+        const out = await writes.detachAndDeleteBizAccount(tenantId, platform, accountId, { confirmDetach });
+        if (!out.ok) {
+          const status = out.httpStatus ?? 400;
+          sendJson(res, status, {
+            error: out.error,
+            code: out.code,
+            association_counts: out.association_counts,
+            requires_detach: out.requires_detach,
+          });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          association_counts: out.association_counts ?? {
+            leads: 0,
+            videos: 0,
+            tasks: 0,
+            placements: 0,
+          },
+        });
+        return;
+      } catch (e) {
+        sendBusinessOrInternalError(res, e);
+        return;
+      }
+    }
+
     const patchAcct = sub.match(/^\/accounts\/([^/]+)\/([^/]+)$/);
     if (req.method === "PATCH" && patchAcct) {
       if (!canManageTenantAdmin(auth.payload)) {

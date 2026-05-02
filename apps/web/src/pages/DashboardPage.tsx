@@ -1,11 +1,11 @@
 import { PageHeader } from "@/components/PageHeader";
 import { Banner, Button, Field, SectionCard, SelectInput, TextInput } from "@/components/ui";
-import { getDashboardSummary, type LeadTrendPoint } from "@/api/dashboard";
+import { getDashboardSummary, type AccountBreakdownRow, type LeadTrendPoint } from "@/api/dashboard";
 import { listAllAccounts } from "@/api/accounts";
 import { getApiBaseUrl } from "@/api/env";
 import { createSyncDataTask } from "@/api/consoleExtras";
 import { listDevices } from "@/api/devices";
-import { listRules } from "@/api/rules";
+import { getRule, listRules } from "@/api/rules";
 import type { AnalyticsFilters } from "@/api/analytics-filters";
 import { parseYmd, ymdDateInputsFromSearchWithStrip } from "@/api/analytics-filters";
 import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
@@ -37,21 +37,25 @@ function buildFilters(sp: URLSearchParams): AnalyticsFilters {
   };
 }
 
+/** 数据大盘内表格：居中对齐 + 加强表头（仅本页使用，不修改全局 .zz-table） */
+const dashboardTableClass =
+  "zz-table table-auto w-max max-w-full text-sm [&_thead]:border-b [&_thead]:border-zz-border-light [&_thead]:bg-zz-surface-muted/80 [&_th]:px-2 [&_th]:py-2.5 [&_th]:text-center [&_th]:text-sm [&_th]:font-semibold [&_th]:text-zz-near [&_th]:normal-case [&_th]:tracking-normal [&_td]:px-2 [&_td]:py-2 [&_td]:text-center";
+
 function DashboardLeadTrendTable({ rows }: { rows: LeadTrendPoint[] }) {
   return (
     <div className="min-w-0 overflow-x-auto">
-      <table className="zz-table w-auto min-w-[14rem] table-fixed [&_td]:px-1 [&_td]:py-1 [&_th]:px-1 [&_th]:py-1 [&_th]:text-[11px]">
+      <table className={dashboardTableClass}>
         <thead>
           <tr>
-            <th className="w-[6.5rem]">日期</th>
-            <th className="w-[3.75rem]">未留资</th>
-            <th className="w-[3.75rem]">已留资</th>
+            <th>日期</th>
+            <th>未留资</th>
+            <th>已留资</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.date}>
-              <td className="font-mono text-xs">{row.date}</td>
+              <td className="whitespace-nowrap font-mono text-xs">{row.date}</td>
               <td className="tabular-nums">{formatNumber(row.open)}</td>
               <td className="tabular-nums">{formatNumber(row.converted)}</td>
             </tr>
@@ -59,6 +63,37 @@ function DashboardLeadTrendTable({ rows }: { rows: LeadTrendPoint[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function DashboardAccountBreakdownTable({ rows }: { rows: AccountBreakdownRow[] }) {
+  return (
+    <table className={dashboardTableClass}>
+      <thead>
+        <tr>
+          <th>账号</th>
+          <th>线索数</th>
+          <th>视频数</th>
+          <th>播放量（快照）</th>
+          <th>点赞</th>
+          <th>评论</th>
+          <th>收藏</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.account_id}>
+            <td className="max-w-[14rem] break-words">{row.display_name ?? "—"}</td>
+            <td className="whitespace-nowrap tabular-nums">{formatNumber(row.leads)}</td>
+            <td className="whitespace-nowrap tabular-nums">{formatNumber(row.videos)}</td>
+            <td className="whitespace-nowrap tabular-nums">{formatNumber(row.plays)}</td>
+            <td className="whitespace-nowrap tabular-nums">{formatNumber(row.likes)}</td>
+            <td className="whitespace-nowrap tabular-nums">{formatNumber(row.comments)}</td>
+            <td className="whitespace-nowrap tabular-nums">{formatNumber(row.favorites)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -137,6 +172,72 @@ export function DashboardPage() {
     () => (rulesQ.data ?? []).filter((r) => r.status === "published" && r.rule_id.trim().length > 0),
     [rulesQ.data],
   );
+  const selectedSyncRule = useMemo(
+    () => publishedRules.find((r) => r.rule_id === syncRuleId.trim()) ?? null,
+    [publishedRules, syncRuleId],
+  );
+  const selectedRuleMetaQ = useQuery({
+    queryKey: ["automation-rule-meta", tenantId, syncRuleId || ""],
+    queryFn: async () => {
+      if (!syncRuleId.trim()) {
+        return null;
+      }
+      return getRule(tenantId, syncRuleId.trim());
+    },
+    enabled: Boolean(apiBase) && syncRuleId.trim().length > 0,
+  });
+  const isDouyinLatestVideoRule = useMemo(() => {
+    const id = syncRuleId.trim();
+    if (id === "douyin-latest-video-sync") {
+      return true;
+    }
+    const detailRaw =
+      selectedRuleMetaQ.data && typeof selectedRuleMetaQ.data === "object" && !Array.isArray(selectedRuleMetaQ.data)
+        ? (selectedRuleMetaQ.data as Record<string, unknown>)
+        : null;
+    const detailMeta = detailRaw?.meta;
+    if (detailMeta && typeof detailMeta === "object" && !Array.isArray(detailMeta)) {
+      const meta = detailMeta as Record<string, unknown>;
+      const topRuleId = typeof meta.rule_id === "string" ? meta.rule_id.trim() : "";
+      if (topRuleId === "douyin-latest-video-sync") {
+        return true;
+      }
+      const bundle = meta.bundle;
+      if (bundle && typeof bundle === "object" && !Array.isArray(bundle)) {
+        const bundleRuleId =
+          typeof (bundle as Record<string, unknown>).rule_id === "string"
+            ? ((bundle as Record<string, unknown>).rule_id as string).trim()
+            : "";
+        if (bundleRuleId === "douyin-latest-video-sync") {
+          return true;
+        }
+      }
+    }
+    const selectedRuleRecord =
+      selectedSyncRule && typeof selectedSyncRule === "object" && !Array.isArray(selectedSyncRule)
+        ? (selectedSyncRule as Record<string, unknown>)
+        : null;
+    const metaRaw = selectedRuleRecord?.meta;
+    if (metaRaw && typeof metaRaw === "object" && !Array.isArray(metaRaw)) {
+      const meta = metaRaw as Record<string, unknown>;
+      const topRuleId = typeof meta.rule_id === "string" ? meta.rule_id.trim() : "";
+      if (topRuleId === "douyin-latest-video-sync") {
+        return true;
+      }
+      const bundle = meta.bundle;
+      if (bundle && typeof bundle === "object" && !Array.isArray(bundle)) {
+        const bundleRuleId =
+          typeof (bundle as Record<string, unknown>).rule_id === "string"
+            ? ((bundle as Record<string, unknown>).rule_id as string).trim()
+            : "";
+        if (bundleRuleId === "douyin-latest-video-sync") {
+          return true;
+        }
+      }
+    }
+    const name = (selectedSyncRule?.name ?? "").trim().toLowerCase();
+    return name.includes("抖音") || name.includes("douyin");
+  }, [syncRuleId, selectedSyncRule, selectedSyncRule?.name, selectedRuleMetaQ.data]);
 
   const syncMut = useMutation({
     mutationFn: async () => {
@@ -145,6 +246,13 @@ export function DashboardPage() {
       }
       if (!syncRuleId.trim()) {
         throw new Error("请选择已发布的同步规则（与任务中心一致，客户端 Runner 依赖 rule_id）");
+      }
+      if (
+        syncRuleId.trim() !== "douyin-latest-video-sync" &&
+        selectedRuleMetaQ.isPending &&
+        !selectedRuleMetaQ.data
+      ) {
+        throw new Error("规则详情加载中，请稍后再试");
       }
       const acc = (accountsSyncQ.data ?? []).find((a) => a.account_id === syncAccountId);
       const entResolved =
@@ -162,8 +270,11 @@ export function DashboardPage() {
           payload: {
             params: {
               mode: "single_account",
-              limit_n: 20,
+              limit_n: isDouyinLatestVideoRule ? 5000 : 20,
               account_id: syncAccountId,
+              ...(isDouyinLatestVideoRule
+                ? { biz_video_list_mode: "full", biz_video_recent_hours: 72 }
+                : {}),
               ...(entResolved ? { dy_leads_enterprise_id: entResolved } : {}),
             },
           },
@@ -296,32 +407,7 @@ export function DashboardPage() {
           </SectionCard>
           <SectionCard title="分账户汇总" titleAs="h2" className="lg:min-w-0">
             <div className="-mx-6 -mb-6 overflow-x-auto rounded-b-[var(--radius-signature)]">
-              <table className="zz-table min-w-[40rem] [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1 [&_th]:text-[11px]">
-                <thead>
-                  <tr>
-                    <th>账号</th>
-                    <th>线索数</th>
-                    <th>视频数</th>
-                    <th>播放量（快照）</th>
-                    <th>点赞</th>
-                    <th>评论</th>
-                    <th>收藏</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {accountBreakdown.map((row) => (
-                    <tr key={row.account_id}>
-                      <td>{row.display_name ?? "—"}</td>
-                      <td className="tabular-nums">{formatNumber(row.leads)}</td>
-                      <td className="tabular-nums">{formatNumber(row.videos)}</td>
-                      <td className="tabular-nums">{formatNumber(row.plays)}</td>
-                      <td className="tabular-nums">{formatNumber(row.likes)}</td>
-                      <td className="tabular-nums">{formatNumber(row.comments)}</td>
-                      <td className="tabular-nums">{formatNumber(row.favorites)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <DashboardAccountBreakdownTable rows={accountBreakdown} />
             </div>
           </SectionCard>
         </div>
@@ -339,32 +425,7 @@ export function DashboardPage() {
           {showAccountBreakdown && accountBreakdown ? (
             <SectionCard title="分账户汇总" titleAs="h2">
               <div className="-mx-6 -mb-6 overflow-x-auto rounded-b-[var(--radius-signature)]">
-                <table className="zz-table min-w-[40rem] [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1 [&_th]:text-[11px]">
-                  <thead>
-                    <tr>
-                      <th>账号</th>
-                      <th>线索数</th>
-                      <th>视频数</th>
-                      <th>播放量（快照）</th>
-                      <th>点赞</th>
-                      <th>评论</th>
-                      <th>收藏</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {accountBreakdown.map((row) => (
-                      <tr key={row.account_id}>
-                        <td>{row.display_name ?? "—"}</td>
-                        <td className="tabular-nums">{formatNumber(row.leads)}</td>
-                        <td className="tabular-nums">{formatNumber(row.videos)}</td>
-                        <td className="tabular-nums">{formatNumber(row.plays)}</td>
-                        <td className="tabular-nums">{formatNumber(row.likes)}</td>
-                        <td className="tabular-nums">{formatNumber(row.comments)}</td>
-                        <td className="tabular-nums">{formatNumber(row.favorites)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <DashboardAccountBreakdownTable rows={accountBreakdown} />
               </div>
             </SectionCard>
           ) : null}

@@ -27,6 +27,7 @@
     "run:high-dive-range": "npx tsx scripts/run-high-dive-daily-range.ts",
     "dev:client": "npm run start -w @zhizhu/client",
     "test:e2e": "npm run test:e2e -w zhizhu-e2e-playwright",
-    "sync:playwright-guides-docs": "node scripts/sync-playwright-guides-docs.mjs"
+    "sync:playwright-guides-docs": "node scripts/sync-playwright-guides-docs.mjs",
+    "run:douyin-latest-sync": "npx tsx scripts/run-douyin-latest-video-sync.ts"
   }
 }

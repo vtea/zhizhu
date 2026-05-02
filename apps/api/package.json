@@ -11,7 +11,7 @@
     "dev": "tsx watch src/index.ts",
     "migrate": "tsx src/migrate.ts",
     "migrate:api": "tsx src/migrate.ts",
-    "test": "tsx --test src/deviceJwt.contract.test.ts src/playwrightShellContract.contract.test.ts src/dbErrorClassify.contract.test.ts src/automationRuleDraftSync.contract.test.ts src/consoleAuthPassword.contract.test.ts src/tenantEntitlement.unit.test.ts src/enterpriseScopePick.contract.test.ts src/fileRuleIngestDispatch.contract.test.ts src/consoleWrites.skipDetails.unit.test.ts src/bizVideoIngestNormalize.unit.test.ts",
+    "test": "tsx --test src/deviceJwt.contract.test.ts src/playwrightShellContract.contract.test.ts src/dbErrorClassify.contract.test.ts src/automationRuleDraftSync.contract.test.ts src/consoleAuthPassword.contract.test.ts src/detachAndDeleteBizAccount.contract.test.ts src/tenantEntitlement.unit.test.ts src/enterpriseScopePick.contract.test.ts src/fileRuleIngestDispatch.contract.test.ts src/consoleWrites.skipDetails.unit.test.ts src/bizVideoIngestNormalize.unit.test.ts",
     "verify:login": "bash scripts/verify-platform-login.sh"
   },
   "dependencies": {

@@ -17,14 +17,23 @@ import type { App } from "electron";
 import type { RuleBody } from "@zhizhu/playwright-rule-schema";
 import { validateRuleBody } from "@zhizhu/playwright-rule-schema";
 import { resolveZhizhuRunnerConsoleBase } from "./config";
+import { augmentRunnerErrorMessageForDisplay } from "./runnerFailureHints";
 import { buildBizVideoCoverageForAggregate } from "./bizVideoCaptureCoverage";
-import { bizVideoCaptureParamsForIngest } from "./bizVideoIngestParams";
 import {
+  bizVideoCaptureParamsForIngest,
+  normalizeBizVideoParamAccountId,
+  normalizeBizVideoParamAccountIds,
+  resolveBizVideoProfileScrollCaptureWait,
+  resolveBizVideoProfileScrollLimitPages,
+} from "./bizVideoIngestParams";
+import {
+  bizVideoRowDedupeKey,
   capturesHaveBizVideoNetworkingPayload,
   tryBuildBizVideoIngestRowsFromSummaryCaptures,
 } from "./bizVideoIngestFromCaptures";
 import {
   buildRowsFromCapturesByIngestTarget,
+  cloneFileRuleIngestRowsSnapshot,
   discoverRuleBundleDirByMappingTarget,
   loadFileRuleBundleForQueuedFilesystemTask,
   postEmployeePersonalAuthFileRuleIngest,
@@ -47,6 +56,11 @@ import {
   resolveRunnerCliJs,
 } from "./runnerProcess";
 import { mergeDyHomepageUrlIntoParams } from "./bizVideoDyHomepageMerge";
+import {
+  canonicalizeDouyinUserHomepageUrlSync,
+  resolveBizVideoRunnerAccountsUserUrls,
+  resolveBizVideoTaskParamsHomepageUrls,
+} from "./douyinUserHomepageCanonical";
 import { applyRuleBodyDefaultParamsToRuntimeParams } from "./ruleDefaultParamsMerge";
 import { closeStdinWithTaskRuleJsonPayload } from "./runnerTaskRuleStdin";
 import { type TaskRunSummary, waitForRunnerTaskRuleChildClose } from "./runnerTaskRuleChild";
@@ -54,10 +68,10 @@ import { registerTaskRuleChild } from "./taskRuleChildRegistry";
 import { clearRunnerLoopTaskCancel, isRunnerLoopTaskCancelRequested } from "./runnerLoopCancel";
 import { appendTaskCenterRun } from "./taskCenterLedger";
 import { applyTaskLocalPayloadOverrides, clearTaskLocalOverride } from "./taskLocalOverrides";
+import { resolveTaskRuleHardTimeoutMs } from "./taskRuleHardTimeout";
 
 const STATUS_FILE = "automation-rule-runner-status.json";
 const POLL_INTERVAL_MS = 30_000;
-const TASK_HARD_TIMEOUT_MS = 5 * 60_000;
 
 /** 与试跑 [`automationRuleTrialRun`](./automationRuleTrialRun.ts) 一致：按设备上登记的 account_id → browser_profile_slug 选用员工浏览器配置 */
 function profileFromDeviceBrowserAccountBinding(
@@ -70,7 +84,7 @@ function profileFromDeviceBrowserAccountBinding(
     return null;
   }
   const row = rows.find(
-    (it) => typeof it.account_id === "string" && it.account_id.trim().toLowerCase() === needle,
+    (it) => normalizeBizVideoParamAccountId(it.account_id).toLowerCase() === needle,
   );
   const boundSlug =
     row && typeof row.browser_profile_slug === "string" ? row.browser_profile_slug.trim() : "";
@@ -203,10 +217,11 @@ function normalizeUrlForCompare(raw: unknown): string {
   if (typeof raw !== "string") {
     return "";
   }
-  const t = raw.trim();
+  let t = raw.trim();
   if (!t) {
     return "";
   }
+  t = canonicalizeDouyinUserHomepageUrlSync(t);
   try {
     const u = new URL(t);
     return `${u.origin}${u.pathname}`.replace(/\/+$/, "").toLowerCase();
@@ -250,8 +265,8 @@ async function resolveBizVideoAccountIdForIngest(
   const targetUniqueId =
     typeof params.target_dy_unique_id === "string" ? params.target_dy_unique_id.trim().toLowerCase() : "";
   const targetHomepage = normalizeUrlForCompare(params.dy_homepage_url);
-  const fromAccountId = typeof params.account_id === "string" ? params.account_id.trim() : "";
-  const fromTargetAccountId = typeof params.target_account_id === "string" ? params.target_account_id.trim() : "";
+  const fromAccountId = normalizeBizVideoParamAccountId(params.account_id);
+  const fromTargetAccountId = normalizeBizVideoParamAccountId(params.target_account_id);
   const anchorCandidates = Array.from(
     new Set([fromAccountId, fromTargetAccountId].filter((x) => x.length > 0)),
   );
@@ -271,7 +286,7 @@ async function resolveBizVideoAccountIdForIngest(
    * 两者皆有时依次尝试，避免仅其一在 runner/accounts 中有效时误走 unique/主页。
    */
   for (const id of anchorCandidates) {
-    const exact = accounts.find((a) => typeof a.account_id === "string" && a.account_id.trim() === id);
+    const exact = accounts.find((a) => normalizeBizVideoParamAccountId(a.account_id) === id);
     if (exact) {
       return { ok: true as const, accountId: id };
     }
@@ -282,8 +297,11 @@ async function resolveBizVideoAccountIdForIngest(
         return u.length > 0 && u === targetUniqueId;
       })
     : null;
-  if (byUnique && typeof byUnique.account_id === "string" && byUnique.account_id.trim().length > 0) {
-    return { ok: true as const, accountId: byUnique.account_id.trim() };
+  if (byUnique) {
+    const aid = normalizeBizVideoParamAccountId(byUnique.account_id);
+    if (aid.length > 0) {
+      return { ok: true as const, accountId: aid };
+    }
   }
   const byHomepage = targetHomepage
     ? accounts.find((a) => {
@@ -291,8 +309,11 @@ async function resolveBizVideoAccountIdForIngest(
         return u.length > 0 && u === targetHomepage;
       })
     : null;
-  if (byHomepage && typeof byHomepage.account_id === "string" && byHomepage.account_id.trim().length > 0) {
-    return { ok: true as const, accountId: byHomepage.account_id.trim() };
+  if (byHomepage) {
+    const aid = normalizeBizVideoParamAccountId(byHomepage.account_id);
+    if (aid.length > 0) {
+      return { ok: true as const, accountId: aid };
+    }
   }
   if (targetUniqueId || targetHomepage) {
     return {
@@ -458,6 +479,8 @@ async function spawnTaskRule(
     consoleBase: string;
     fingerprintSeed: string;
     runId: string;
+    /** 墙钟硬超时：须覆盖长 paginate，避免父进程 SIGTERM 导致 Playwright 页已关闭 */
+    hardTimeoutMs: number;
   },
   onLogLine: (line: string) => void,
 ): Promise<TaskRunSummary> {
@@ -551,7 +574,7 @@ async function spawnTaskRule(
     const userAbortRef = { aborted: false };
     registerTaskRuleChild(child, userAbortRef, "loop");
     return await waitForRunnerTaskRuleChildClose(child, {
-      hardTimeoutMs: TASK_HARD_TIMEOUT_MS,
+      hardTimeoutMs: args.hardTimeoutMs,
       onLogLine,
       userAbortRef,
     });
@@ -901,11 +924,11 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
   const headed =
     process.env.ZHIZHU_TASK_RULE_HEADED?.trim() === "1" ||
     process.env.ZHIZHU_TASK_RULE_HEADED?.trim().toLowerCase() === "true";
-  const defaultAccountId = typeof task.account_id === "string" ? task.account_id.trim() : "";
+  const defaultAccountId = normalizeBizVideoParamAccountId(task.account_id);
   const mode = typeof params.mode === "string" ? params.mode.trim() : "";
   if (inferredIngestTarget === "biz_video") {
     const listModeRaw = typeof params.biz_video_list_mode === "string" ? params.biz_video_list_mode.trim() : "";
-    const listMode = listModeRaw === "full" ? "full" : "recent_72h";
+    const listMode = listModeRaw === "recent_72h" ? "recent_72h" : "full";
     const recentHoursRaw =
       typeof params.biz_video_recent_hours === "number"
         ? params.biz_video_recent_hours
@@ -921,18 +944,13 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       biz_video_list_mode: listMode,
       biz_video_recent_hours: recentHours,
       biz_video_collect_anchor_iso: cloudRunStartedAt,
-      profile_scroll_limit_pages: listMode === "full" ? 500 : 80,
+      profile_scroll_limit_pages: resolveBizVideoProfileScrollLimitPages(params, listMode),
+      profile_scroll_capture_wait: resolveBizVideoProfileScrollCaptureWait(params, listMode),
     };
+    params = await resolveBizVideoTaskParamsHomepageUrls(params);
   }
-  const paramAccountId =
-    typeof params.account_id === "string" && params.account_id.trim().length > 0
-      ? params.account_id.trim()
-      : "";
-  const accountIdsFromParams = Array.isArray(params.account_ids)
-    ? params.account_ids
-        .map((x) => (typeof x === "string" ? x.trim() : ""))
-        .filter((x) => x.length > 0)
-    : [];
+  const paramAccountId = normalizeBizVideoParamAccountId(params.account_id);
+  const accountIdsFromParams = normalizeBizVideoParamAccountIds(params.account_ids);
   /**
    * 抖音视频同步单账号：`biz_task.account_id` 为控制台校验后的派发锚点；`payload.params.account_id` 可能来自
    * 旧缓存、本机 task-local-overrides 或与任务行不一致，不得优先于任务行（否则会 merge 到错误员工的 dy_user_url）。
@@ -946,9 +964,18 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       : paramAccountId.length > 0
         ? paramAccountId
         : defaultAccountId;
+  /** 全账号：`account_ids` 优先；若控制台/历史任务未填数组，回退 params.account_id 或任务行 account_id，避免 flat captures + 无 account_id 入库。 */
+  const enterpriseRunIdsRaw =
+    accountIdsFromParams.length > 0
+      ? accountIdsFromParams
+      : paramAccountId.length > 0
+        ? [paramAccountId]
+        : defaultAccountId.length > 0
+          ? [defaultAccountId]
+          : [];
   const accountRunList =
     inferredIngestTarget === "biz_video" && mode === "enterprise_all_accounts"
-      ? Array.from(new Set(accountIdsFromParams))
+      ? Array.from(new Set(enterpriseRunIdsRaw))
       : Array.from(new Set([singleAccountCandidate].filter((x) => x.length > 0)));
   if (
     inferredIngestTarget === "biz_video" &&
@@ -1006,7 +1033,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
     return true;
   }
   if (inferredIngestTarget === "biz_video" && mode === "enterprise_all_accounts" && accountRunList.length === 0) {
-    const reason = "enterprise_all_accounts 模式缺少 payload.params.account_ids（非空数组）";
+    const reason =
+      "enterprise_all_accounts 模式缺少可循环的业务账号：请在 payload.params.account_ids 中提供，或提供 params.account_id / 任务派发账号。";
     await patchTask(ctx, task.id, {
       status: "failed",
       error_code: "VALIDATION_FAILED",
@@ -1028,7 +1056,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastFinishedAt: new Date().toISOString(),
       lastOk: false,
       lastErrorCode: "VALIDATION_FAILED",
-      lastErrorMessage: "enterprise_all_accounts 模式缺少 account_ids",
+      lastErrorMessage: "enterprise_all_accounts 模式缺少可循环的业务账号",
       currentTaskId: null,
       lastPolledAt: new Date().toISOString(),
       lastPollErrorStatus: null,
@@ -1082,7 +1110,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       typeof params.dy_leads_enterprise_id === "string" ? params.dy_leads_enterprise_id.trim() : null,
     );
     if (accList.ok) {
-      bizVideoOpsAccounts = accList.items;
+      bizVideoOpsAccounts = await resolveBizVideoRunnerAccountsUserUrls(accList.items);
     } else {
       bizVideoAccountsFetchError = accList.message;
       bizVideoOpsAccounts = [];
@@ -1165,7 +1193,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         const needle = accountIdForRun.trim().toLowerCase();
         if (needle.length > 0 && deviceBrowserAccountRows.length > 0) {
           const row = deviceBrowserAccountRows.find(
-            (it) => typeof it.account_id === "string" && it.account_id.trim().toLowerCase() === needle,
+            (it) => normalizeBizVideoParamAccountId(it.account_id).toLowerCase() === needle,
           );
           const boundSlug =
             row && typeof row.browser_profile_slug === "string" ? row.browser_profile_slug.trim() : "";
@@ -1196,6 +1224,11 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         consoleBase,
         fingerprintSeed,
         runId,
+        hardTimeoutMs: resolveTaskRuleHardTimeoutMs({
+          inferredIngestTarget,
+          params: paramsForRun,
+          ruleBody: effectiveRuleBody,
+        }),
       },
       onLogLine,
     );
@@ -1205,7 +1238,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         if (inferredIngestTarget === "biz_video") {
           aggregateRows.push(
             ...one.rows.map((r) => {
-              const aid = typeof r.account_id === "string" ? r.account_id.trim() : "";
+              const aid = normalizeBizVideoParamAccountId(r.account_id);
               if (aid.length > 0) {
                 return r;
               }
@@ -1227,7 +1260,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       runFailures.push({
         account_id: accountIdForRun,
         error_code: one.error_code,
-        error_message: one.error_message,
+        error_message: augmentRunnerErrorMessageForDisplay(one.error_code, one.error_message),
       });
     }
     if (isRunnerLoopTaskCancelRequested() || one.error_code === "USER_CANCELLED") {
@@ -1376,24 +1409,48 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         typeof resolvedIngest.mapping.target === "string" ? resolvedIngest.mapping.target.trim() : "";
       const rowDerivationParams =
         mt === "biz_video" ? bizVideoCaptureParamsForIngest(params, defaultAccountId, mode) : params;
-      let rowsForIngest =
-        summary.rows.length === 0
-          ? mt === "biz_video"
-            ? (bizVideoIngestAttempt?.rows ?? [])
-            : buildRowsFromCapturesByIngestTarget(mt, summary.captures, {
-                syncBatchId: `task_${task.id}`,
-                params: rowDerivationParams,
-              })
-          : summary.rows;
+      let rowsForIngest: Record<string, unknown>[];
+      if (mt === "biz_video") {
+        rowsForIngest = [...(bizVideoIngestAttempt?.rows ?? [])];
+        if (summary.rows.length > 0) {
+          const seen = new Set<string>();
+          for (const r of rowsForIngest) {
+            const k = bizVideoRowDedupeKey(r);
+            if (k.length > 0) {
+              seen.add(k);
+            }
+          }
+          for (const r of summary.rows) {
+            const k = bizVideoRowDedupeKey(r);
+            if (k.length > 0) {
+              if (!seen.has(k)) {
+                rowsForIngest.push(r);
+                seen.add(k);
+              }
+            } else {
+              rowsForIngest.push(r);
+            }
+          }
+        }
+      } else if (summary.rows.length === 0) {
+        rowsForIngest = buildRowsFromCapturesByIngestTarget(mt, summary.captures, {
+          syncBatchId: `task_${task.id}`,
+          params: rowDerivationParams,
+        });
+      } else {
+        /** 勿与 `summary.rows` 共引用，避免入库前补全字段时改动 Runner 结案内存 */
+        rowsForIngest = [...summary.rows];
+      }
+      const bizVideoIngestBlockedHint =
+        bizVideoIngestAttempt?.merge_blocked_reason_zh ?? bizVideoIngestAttempt?.row_derivation_debug_zh;
       if (
         summary.ok &&
         mt === "biz_video" &&
-        summary.rows.length === 0 &&
         rowsForIngest.length === 0 &&
-        bizVideoIngestAttempt?.merge_blocked_reason_zh &&
+        bizVideoIngestBlockedHint &&
         capturesHaveBizVideoNetworkingPayload(summary.captures as Record<string, unknown>)
       ) {
-        const reason = `视频入库推导未执行（已采到抖音接口数据）：${bizVideoIngestAttempt.merge_blocked_reason_zh}`;
+        const reason = `视频入库推导未执行（已采到抖音接口数据）：${bizVideoIngestBlockedHint}`;
         await patchTask(ctx, task.id, {
           status: "failed",
           error_code: "MISSING_DY_HOMEPAGE",
@@ -1433,7 +1490,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
             accountRunList.length > 0 ? accountRunList[0]!.trim() : defaultAccountId;
           if (rowAccountFallback.length > 0) {
             rowsForIngest = rowsForIngest.map((r) => {
-              const aid = typeof r.account_id === "string" ? r.account_id.trim() : "";
+              const aid = normalizeBizVideoParamAccountId(r.account_id);
               if (aid.length > 0) {
                 return r;
               }
@@ -1492,11 +1549,12 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       if (await bailIfUserCancelled()) {
         return true;
       }
+      const ingestRowsSnapshot = cloneFileRuleIngestRowsSnapshot(rowsForIngest);
       const ingest = await postEmployeePersonalAuthFileRuleIngest(
         ctx,
         task.id,
         resolvedIngest.ingestRuleLabel,
-        rowsForIngest,
+        ingestRowsSnapshot,
         resolvedIngest.mapping,
       );
       if (!ingest.ok) {
@@ -1537,7 +1595,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         const rs = patchBody.result_summary as Record<string, unknown>;
         rs.ingest_written = ingestWritten;
         rs.ingest_skipped = ingest.skipped;
-        rs.rows_count = rowsForIngest.length;
+        rs.rows_count = ingestRowsSnapshot.length;
         if (ingest.target) rs.ingest_target = ingest.target;
         if (ingest.skip_reasons) rs.ingest_skip_reasons = ingest.skip_reasons;
         rs.ingest_skip_details = ingest.skip_details;
@@ -1554,7 +1612,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
               accountRunList,
               opsAccounts: bizVideoOpsAccounts,
               syncBatchId: `task_${task.id}`,
-              rowsForIngest,
+              rowsForIngest: ingestRowsSnapshot,
               ingest: {
                 written: ingest.written,
                 skipped: ingest.skipped,
@@ -1568,6 +1626,10 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
               rs.biz_video_coverage_by_account = cov.biz_video_coverage_by_account;
             }
             rs.biz_video_coverage_message_zh = cov.biz_video_coverage_message_zh;
+            if (bizVideoIngestAttempt?.merge_blocked_reason_zh && ingestRowsSnapshot.length > 0) {
+              rs.biz_video_merge_hint_zh = bizVideoIngestAttempt.merge_blocked_reason_zh;
+              onLogLine(`[runner-loop] ${bizVideoIngestAttempt.merge_blocked_reason_zh}`);
+            }
             onLogLine(`[runner-loop] 抖音对账 ${cov.biz_video_coverage_message_zh}`);
           } catch (e) {
             onLogLine(
@@ -1664,7 +1726,12 @@ function inferIngestTargetFromRuleBody(body: RuleBody): string | null {
       if (step.key === "high_dive_wlz_payload" || step.key === "high_dive_ylz_payload") {
         return "biz_lead";
       }
-      if (step.key === "dy_latest_video_payload" || step.key === "dy_video_list_payload" || step.key === "video_list_payload") {
+      if (
+        step.key === "dy_latest_video_payload" ||
+        step.key === "dy_seo_inner_link_payload" ||
+        step.key === "dy_video_list_payload" ||
+        step.key === "video_list_payload"
+      ) {
         return "biz_video";
       }
     }

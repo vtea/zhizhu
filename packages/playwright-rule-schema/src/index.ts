@@ -54,6 +54,14 @@ export type GotoStep = {
   /** 控制台基址下的相对路径，须以 `/` 开头 */
   path?: string;
   waitUntil?: "load" | "domcontentloaded" | "networkidle" | "commit";
+  /**
+   * 导航失败时额外重试次数（不含首次），仅当 Playwright 报错含瞬时网络类 net:: 错误时生效；0–5，缺省 0。
+   */
+  nav_retry_count?: number;
+  /**
+   * 重试前等待（ms），200–10000，缺省 1000；仅 `nav_retry_count` > 0 时有意义。
+   */
+  nav_retry_backoff_ms?: number;
 };
 
 export type SetDateRangeStep = {
@@ -116,6 +124,19 @@ export type PaginateStep = {
    * 缺省：min(整步 perStepTimeout, 35000)。
    */
   wait_capture_retry_timeout_ms?: number;
+  /**
+   * 仅 `mode==='scroll'`：每轮滚轮 +（若有）等抓包 + `step_wait_ms` 之后，若该选择器（含 fallbacks）在页上 **可见**，
+   * 则视为列表已到底并 **正常结束** 翻页循环；不替代 `limit_pages`（仍为硬上限）。
+   * 典型：抖音个人主页底栏 `text=暂时没有更多了`，避免盲滚打满 `limit_pages`。
+   */
+  scroll_end_if_visible?: SelectorRef;
+  /**
+   * 仅 `mode==='scroll'`：每次滚轮后是否等待 `wait_capture_key` 累加次数 +1。
+   * - `response`（缺省）：无新匹配响应则视为列表结束并早退；
+   * - `none`：仅滚轮 + `step_wait_ms`，不因无新响应结束。
+   * 任务参数 `profile_scroll_capture_wait`（`none` / `response`）优先于本字段。
+   */
+  scroll_capture_wait?: "response" | "none";
 };
 
 export type CollectTableColumn = {
@@ -360,6 +381,18 @@ function validateStep(step: unknown, idx: number): string | null {
       ) {
         return `steps[${idx}](goto).waitUntil 取值无效`;
       }
+      if (step.nav_retry_count !== undefined) {
+        const n = Number(step.nav_retry_count);
+        if (!Number.isInteger(n) || n < 0 || n > 5) {
+          return `steps[${idx}](goto).nav_retry_count 须为 0–5 的整数`;
+        }
+      }
+      if (step.nav_retry_backoff_ms !== undefined) {
+        const n = Number(step.nav_retry_backoff_ms);
+        if (!Number.isFinite(n) || n < 200 || n > 10000) {
+          return `steps[${idx}](goto).nav_retry_backoff_ms 须为 200–10000`;
+        }
+      }
       return null;
     }
     case "setDateRange": {
@@ -441,6 +474,23 @@ function validateStep(step: unknown, idx: number): string | null {
           if (!Number.isFinite(n) || n < 5000 || n > 120000) {
             return `steps[${idx}](paginate).${fn} 须为 5000–120000`;
           }
+        }
+      }
+      if (step.scroll_capture_wait !== undefined) {
+        if (step.mode !== "scroll") {
+          return `steps[${idx}](paginate).scroll_capture_wait 仅适用于 mode=scroll`;
+        }
+        if (step.scroll_capture_wait !== "none" && step.scroll_capture_wait !== "response") {
+          return `steps[${idx}](paginate).scroll_capture_wait 须为 'none' 或 'response'`;
+        }
+      }
+      if (step.scroll_end_if_visible !== undefined) {
+        if (step.mode !== "scroll") {
+          return `steps[${idx}](paginate).scroll_end_if_visible 仅适用于 mode=scroll`;
+        }
+        const sel = validateSelector(step.scroll_end_if_visible, `steps[${idx}](paginate).scroll_end_if_visible`);
+        if (sel) {
+          return sel;
         }
       }
       return null;

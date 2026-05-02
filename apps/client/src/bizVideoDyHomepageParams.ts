@@ -2,6 +2,10 @@
  * 抖音最新视频同步：试跑时拉 runner/accounts 后合并主页 URL。
  */
 import { mergeDyHomepageUrlIntoParams } from "./bizVideoDyHomepageMerge";
+import {
+  resolveBizVideoRunnerAccountsUserUrls,
+  resolveBizVideoTaskParamsHomepageUrls,
+} from "./douyinUserHomepageCanonical";
 import { tenantDeviceHttpJson, type TenantDeviceApiContext } from "./employeePersonalAuthFileIngest";
 
 export {
@@ -36,7 +40,7 @@ export async function enrichBizVideoParamsWithDyHomepage(
     const r = await tenantDeviceHttpJson<Record<string, unknown>[]>(ctx, "GET", suffix);
     if (r.ok) {
       if (Array.isArray(r.data)) {
-        accounts = r.data;
+        accounts = await resolveBizVideoRunnerAccountsUserUrls(r.data);
       } else {
         accountsFetchError = "runner/accounts 响应正文不是账号数组";
       }
@@ -44,7 +48,8 @@ export async function enrichBizVideoParamsWithDyHomepage(
       accountsFetchError = r.message;
     }
   }
-  const merged = mergeDyHomepageUrlIntoParams(params, accountIdForRun, accounts, false);
+  const paramsResolved = await resolveBizVideoTaskParamsHomepageUrls(params);
+  const merged = mergeDyHomepageUrlIntoParams(paramsResolved, accountIdForRun, accounts, false);
   if (!merged.ok) {
     const needsAccountList = !hasNonEmptyDyHomepageUrl(params);
     if (accountsFetchError != null && needsAccountList) {

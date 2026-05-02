@@ -11,7 +11,11 @@ import type { PlaywrightBrowserProfileRecord } from "./sharedTypes";
 export { validateDefaultStartPath, validateProfileSlug };
 
 const REGISTRY_FILE = "playwright-browser-profiles.json";
-/** 与各 profile Chromium userDataDir 的根目录（在 userData 下） */
+/**
+ * 与各 profile Chromium userDataDir 的根目录（在 app.getPath("userData") 下）。
+ * 注意：开发态 `electron .` 的 userData 目录名常来自 package.json 的 `name`（如 `@zhizhu/client`），
+ * 与安装版 `productName`（「知竹」）不同；终端侧 Runner 须使用与当前客户端同一 userData 下的 `playwright-profiles/<slug>`。
+ */
 const PROFILES_FOLDER = "playwright-profiles";
 const LEGACY_PROFILE_TS_FALLBACK = new Date(0).toISOString();
 

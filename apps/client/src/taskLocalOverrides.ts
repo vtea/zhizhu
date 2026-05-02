@@ -27,6 +27,8 @@ const ALLOWED_PARAM_KEYS = new Set([
   "biz_video_recent_hours",
   "biz_video_collect_anchor_iso",
   "profile_scroll_limit_pages",
+  "profile_scroll_capture_wait",
+  "profile_scroll_step_wait_ms",
   "console_base",
   "consoleBase",
 ]);

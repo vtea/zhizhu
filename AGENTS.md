@@ -1,5 +1,10 @@
 # 本仓库 Agent / 研发约定
 
+## 排障与修改（确定性）
+
+- **规则全文**：见 [`.cursor/rules/deterministic-debugging.mdc`](.cursor/rules/deterministic-debugging.mdc)（对 Cursor Agent **始终生效**）。
+- **要点**：先日志/代码/数据证据再下结论；能改仓库则直接改；禁止用「可能」类措辞代替查证；交付须含验证方式。
+
 ## 本地环境
 
 - 仓库根 **`npm run bootstrap:env`**：只补缺失变量并生成 `JWT_SECRET` / `DEVICE_TOKEN_SECRET`、**`CONSOLE_ALLOW_PUBLIC_REGISTER`**（及 Web **`VITE_CONSOLE_PUBLIC_REGISTER`**）等，不覆盖已有 `.env`；用法见根目录 **README.md**「`bootstrap:env`」小节与 [`.env.example`](.env.example)。**老环境**：未设 **`CONSOLE_ALLOW_PUBLIC_REGISTER=true`** 时自助注册 API **403**，可手写补键或再跑 bootstrap；租户授权列须 **`npm run migrate:api`** 应用至 **`047`** 及后续（含 **`048_biz_video_dy_video_url`**），否则租户列表/登记或视频列表可能降级或报缺列。

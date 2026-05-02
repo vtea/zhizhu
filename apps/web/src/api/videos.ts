@@ -1,9 +1,10 @@
 import { getApiBaseUrl } from "@/api/env";
-import { inInteractionWindow, type AnalyticsFilters, parseYmd } from "@/api/analytics-filters";
+import { type AnalyticsFilters, parseYmd } from "@/api/analytics-filters";
 import { apiDeleteJson, apiGetJson, apiPatchJson, apiPostJson } from "@/api/http";
 import type { Paginated } from "@/api/types";
 import { sameBizAccountId } from "@/lib/bizAccountId";
 import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
+import { isPublishWithinLastDaysShanghai, publishAtInShanghaiDateRange } from "@/lib/dateShanghai";
 import { sleepMock } from "@/mocks/delay";
 import { mockVideos, type MockVideo } from "@/mocks/seed";
 
@@ -41,7 +42,7 @@ function applyVideoFilters(q: ListVideosQuery): MockVideo[] {
       return false;
     }
     if (q.from || q.to) {
-      return inInteractionWindow(v.dy_publish_at, parseYmd(q.from), parseYmd(q.to));
+      return publishAtInShanghaiDateRange(v.dy_publish_at, parseYmd(q.from), parseYmd(q.to));
     }
     return true;
   });
@@ -182,7 +183,7 @@ export async function listRecommendedVideos(
     if (dyLeadsEnterpriseId?.trim() && !sameDyLeadsEnterpriseId(v.dy_leads_enterprise_id, dyLeadsEnterpriseId)) {
       return false;
     }
-    return true;
+    return isPublishWithinLastDaysShanghai(v.dy_publish_at ?? null, 7);
   });
   return rows
     .map((v) => ({

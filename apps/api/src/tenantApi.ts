@@ -26,6 +26,9 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** 抖音发布时间在上海的日历日；滚动窗口用 `(now() AT TIME ZONE 'Asia/Shanghai')::date - $n`（`n = spanDays-1`） */
+const DY_PUBLISH_DATE_SH = `(v.dy_publish_at AT TIME ZONE 'Asia/Shanghai')::date`;
+
 /** 兼容 node-pg 对 `boolean` 的常规解析，以及少数配置下返回的 `t`/`f` 文本 */
 function readPgBool(v: unknown): boolean {
   if (v === true || v === 1) {
@@ -116,6 +119,8 @@ export async function listVideos(
     from?: string | null;
     to?: string | null;
     dyVideoId?: string | null;
+    /** 与 `from` 互斥：按上海日历「最近 N 个自然日（含当天）」筛发布时间，由 SQL 用 `now()` 计算截止日 */
+    publishWithinLastDaysShanghai?: number | null;
   },
   scope: EnterpriseScopeFilter = { kind: "all" },
 ): Promise<{ items: Record<string, unknown>[]; total: number; page: number; pageSize: number } | DbError> {
@@ -131,13 +136,20 @@ export async function listVideos(
     wh.push(`v.account_id = $${n++}`);
     params.push(opts.accountId);
   }
-  if (opts.from) {
-    wh.push(`v.dy_publish_at::date >= $${n++}::date`);
-    params.push(opts.from);
-  }
-  if (opts.to) {
-    wh.push(`v.dy_publish_at::date <= $${n++}::date`);
-    params.push(opts.to);
+  const rolling = opts.publishWithinLastDaysShanghai;
+  if (rolling != null && Number.isFinite(rolling) && rolling > 0) {
+    const span = Math.min(366, Math.max(1, Math.floor(rolling)));
+    wh.push(`${DY_PUBLISH_DATE_SH} >= ((now() AT TIME ZONE 'Asia/Shanghai')::date - $${n++}::int)`);
+    params.push(span - 1);
+  } else {
+    if (opts.from) {
+      wh.push(`${DY_PUBLISH_DATE_SH} >= $${n++}::date`);
+      params.push(opts.from);
+    }
+    if (opts.to) {
+      wh.push(`${DY_PUBLISH_DATE_SH} <= $${n++}::date`);
+      params.push(opts.to);
+    }
   }
   if (scope.kind === "scoped") {
     if (scope.dy_leads_enterprise_ids.length === 0) {
@@ -240,7 +252,7 @@ function scoreVideo(v: Record<string, unknown>): number {
 }
 
 export async function listRecommendedVideos(tenantId: string, scope: EnterpriseScopeFilter = { kind: "all" }): Promise<Record<string, unknown>[] | DbError> {
-  const out = await listVideos(tenantId, 1, 500, { sort: "play_desc" }, scope);
+  const out = await listVideos(tenantId, 1, 500, { sort: "play_desc", publishWithinLastDaysShanghai: 7 }, scope);
   if ("error" in out) {
     return out;
   }

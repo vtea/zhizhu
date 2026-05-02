@@ -5,14 +5,48 @@
  * - launchPersistentContext / 共享指纹（runPersistentBrowserSession 同款）
  * - 把 page 与 params 注入；在 runRule 之外管理 trace 开关
  *
- * 不在解释器内：navigation 重试、UA 漂移、headed 弹窗（保持 Runner 仅做"DSL → Playwright API"）。
+ * 不在解释器内：UA 漂移、headed 弹窗（保持 Runner 仅做"DSL → Playwright API"）。
+ * `goto` 可选 `nav_retry_count` / `nav_retry_backoff_ms`：仅对若干瞬时网络类 net:: 错误做有限次重试。
  */
 import type { Page } from "playwright";
-import { applyPlaceholders, type RuleBody, type RuleStep, type SelectorRef } from "@zhizhu/playwright-rule-schema";
+import {
+  applyPlaceholders,
+  type PaginateStep,
+  type RuleBody,
+  type RuleStep,
+  type SelectorRef,
+} from "@zhizhu/playwright-rule-schema";
 
 import { RuleError } from "./errors";
+import { buildCaptureDiagnostics } from "./captureDiagnostics";
 import { CaptureBucket, registerCapture } from "./capture";
-import { buildLocator, describe, resolveLocator, waitForLocator } from "./selectors";
+import { buildLocator, describe, isAnySelectorVisible, resolveLocator, waitForLocator } from "./selectors";
+import { isTransientNetNavError, sleepMs } from "./transientNavErrors";
+
+/**
+ * 抖音个人主页作品区滚到底提示；规则未配 `scroll_end_if_visible` 时仍可对常见步骤早退。
+ * 勿绑站点 hash class；文案改版可先在 rule.json 覆盖 `scroll_end_if_visible`。
+ */
+const DEFAULT_DY_SCROLL_END_SELECTOR: SelectorRef = {
+  kind: "css",
+  value: "text=暂时没有更多了",
+  fallbacks: [{ kind: "css", value: "text=没有更多了" }],
+};
+
+function resolveEffectiveScrollEndIfVisible(opts: {
+  step: PaginateStep;
+  waitCaptureKey: string | undefined;
+}): SelectorRef | undefined {
+  if (opts.step.scroll_end_if_visible) {
+    return opts.step.scroll_end_if_visible;
+  }
+  const sid = typeof opts.step.step_id === "string" ? opts.step.step_id.trim() : "";
+  const key = typeof opts.waitCaptureKey === "string" ? opts.waitCaptureKey.trim() : "";
+  if (sid === "scroll_profile_to_load_more_posts" || key === "dy_latest_video_payload") {
+    return DEFAULT_DY_SCROLL_END_SELECTOR;
+  }
+  return undefined;
+}
 
 function parseYmd(input: string): { y: number; m: number; d: number } | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.trim());
@@ -147,6 +181,8 @@ export interface RunRuleResult {
   ok: boolean;
   rows: Record<string, unknown>[];
   captures: Record<string, unknown>;
+  /** 抖音列表类 capture 的响应条数与 aweme_list 条数之和，便于结案区分「少响应」与「入库过滤」 */
+  capture_diagnostics?: Record<string, { response_count: number; aweme_list_length_sum: number }>;
   step_durations: { step_index: number; step_id: string | null; step_type: string; duration_ms: number; ok: boolean }[];
   failed_step?: number;
   error_code?: string;
@@ -204,6 +240,7 @@ export async function runRule(opts: RunRuleOptions): Promise<RunRuleResult> {
         ok: false,
         rows,
         captures: cap.captures,
+        capture_diagnostics: buildCaptureDiagnostics(cap.captures as Record<string, unknown>),
         step_durations: stepDurations,
         failed_step: i,
         error_code: ruleError.code,
@@ -217,6 +254,7 @@ export async function runRule(opts: RunRuleOptions): Promise<RunRuleResult> {
     ok: true,
     rows,
     captures: cap.captures,
+    capture_diagnostics: buildCaptureDiagnostics(cap.captures as Record<string, unknown>),
     step_durations: stepDurations,
   };
 }
@@ -319,17 +357,38 @@ async function executeStep(
           `goto 展开后地址无效（当前=${target}）`,
         );
       }
-      try {
-        await page.goto(target, { waitUntil: step.waitUntil ?? "domcontentloaded", timeout: perStepTimeoutMs });
-      } catch (e) {
-        throw new RuleError(
-          "NAV_FAILED",
-          idx,
-          step.type,
-          `导航失败 ${target}：${e instanceof Error ? e.message : String(e)}`,
-        );
+      const extraRetries =
+        step.nav_retry_count !== undefined
+          ? Math.min(5, Math.max(0, Math.floor(Number(step.nav_retry_count))))
+          : 0;
+      const backoff =
+        step.nav_retry_backoff_ms !== undefined
+          ? Math.min(10_000, Math.max(200, Math.floor(Number(step.nav_retry_backoff_ms))))
+          : 1000;
+      const maxAttempts = 1 + extraRetries;
+      let lastMsg = "";
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+          await sleepMs(backoff);
+        }
+        try {
+          await page.goto(target, { waitUntil: step.waitUntil ?? "domcontentloaded", timeout: perStepTimeoutMs });
+          return;
+        } catch (e) {
+          lastMsg = e instanceof Error ? e.message : String(e);
+          const transient = isTransientNetNavError(lastMsg);
+          if (!transient || attempt === maxAttempts - 1) {
+            const retryNote = attempt > 0 ? `（已重试 ${attempt} 次）` : "";
+            throw new RuleError(
+              "NAV_FAILED",
+              idx,
+              step.type,
+              `导航失败 ${target}：${lastMsg}${retryNote}`,
+            );
+          }
+        }
       }
-      return;
+      break;
     }
     case "setDateRange": {
       const startApply = applyPlaceholders(step.start, params);
@@ -596,6 +655,13 @@ async function executeStep(
       }
       const px = step.scroll_pixels ?? 800;
       const scrollWaitKey = step.wait_capture_key;
+      const rawScw = params.profile_scroll_capture_wait;
+      const scrollCaptureWaitFromParams =
+        rawScw === "none" || rawScw === "response" ? rawScw : null;
+      const scrollCaptureWait =
+        scrollCaptureWaitFromParams ?? step.scroll_capture_wait ?? "response";
+      const waitAfterScrollForNewCapture =
+        Boolean(scrollWaitKey) && scrollCaptureWait !== "none";
       const overrideRaw = params.profile_scroll_limit_pages;
       const overrideN =
         typeof overrideRaw === "number"
@@ -616,17 +682,24 @@ async function executeStep(
         step.wait_capture_retry_timeout_ms !== undefined
           ? step.wait_capture_retry_timeout_ms
           : Math.min(perStepTimeoutMs, 35_000);
+      const effectiveScrollEnd = resolveEffectiveScrollEndIfVisible({
+        step,
+        waitCaptureKey: scrollWaitKey,
+      });
       for (let p = 0; p < scrollLimitPages; p++) {
-        const prevCount = scrollWaitKey ? bucket.countOf(scrollWaitKey) : 0;
+        if (effectiveScrollEnd && (await isAnySelectorVisible(effectiveScrollEnd, page))) {
+          return;
+        }
+        const prevCount = waitAfterScrollForNewCapture ? bucket.countOf(scrollWaitKey!) : 0;
         await page.mouse.wheel(0, px);
-        if (scrollWaitKey) {
+        if (waitAfterScrollForNewCapture) {
           try {
-            await bucket.waitForCountAtLeast(scrollWaitKey, prevCount + 1, scrollPerPageTimeoutMs, idx);
+            await bucket.waitForCountAtLeast(scrollWaitKey!, prevCount + 1, scrollPerPageTimeoutMs, idx);
           } catch (e) {
             if (e instanceof RuleError && e.code === "NETWORK_PATTERN_TIMEOUT") {
               try {
                 /** 慢响应再给一轮；二次仍超时视为「列表加载结束」正常退出循环，避免无意义打满 limit_pages */
-                await bucket.waitForCountAtLeast(scrollWaitKey, prevCount + 1, scrollRetryExtraMs, idx);
+                await bucket.waitForCountAtLeast(scrollWaitKey!, prevCount + 1, scrollRetryExtraMs, idx);
               } catch (e2) {
                 if (e2 instanceof RuleError && e2.code === "NETWORK_PATTERN_TIMEOUT") {
                   return;
@@ -640,6 +713,9 @@ async function executeStep(
           await page.waitForTimeout(stepWait);
         } else {
           await page.waitForTimeout(stepWait);
+        }
+        if (effectiveScrollEnd && (await isAnySelectorVisible(effectiveScrollEnd, page))) {
+          return;
         }
       }
       return;
@@ -680,7 +756,11 @@ async function executeStep(
     case "captureDomAssign": {
       const stepTimeoutRaw = step.timeout_ms ?? perStepTimeoutMs;
       const stepTimeout = Math.min(Math.max(stepTimeoutRaw, 100), perStepTimeoutMs);
-      const locTimeout = step.optional === true ? Math.min(perStepTimeoutMs, 10_000) : stepTimeout;
+      /** optional 时仍尊重规则 `timeout_ms` 上限，避免固定 10s 拖慢已声明更短等待的规则（如抖音主页作品数 DOM） */
+      const locTimeout =
+        step.optional === true
+          ? Math.min(perStepTimeoutMs, step.timeout_ms ?? 10_000)
+          : stepTimeout;
       let loc: Awaited<ReturnType<typeof waitForLocator>>;
       try {
         loc = await waitForLocator(step.selector, page, idx, step.type, locTimeout);

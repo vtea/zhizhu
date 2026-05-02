@@ -91,6 +91,30 @@ test("validateRuleBody: goto step 校验 url 与 path", () => {
   );
 });
 
+test("validateRuleBody: goto.nav_retry_count / nav_retry_backoff_ms", () => {
+  assert.equal(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [{ type: "goto", url: "https://a/", nav_retry_count: 2, nav_retry_backoff_ms: 800 }],
+    }),
+    null,
+  );
+  assert.match(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [{ type: "goto", url: "https://a/", nav_retry_count: 6 }],
+    }) ?? "",
+    /nav_retry_count/,
+  );
+  assert.match(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [{ type: "goto", url: "https://a/", nav_retry_backoff_ms: 150 }],
+    }) ?? "",
+    /nav_retry_backoff_ms/,
+  );
+});
+
 test("validateRuleBody: collectTable 列 key 唯一", () => {
   const r = validateRuleBody({
     schema_version: 1,
@@ -239,6 +263,74 @@ test("validateRuleBody: paginate.wait_capture_key 在 next_button / scroll 两�
       ],
     }) ?? "",
     /wait_capture_timeout_ms 须为 5000–120000/,
+  );
+});
+
+test("validateRuleBody: paginate.scroll_capture_wait 仅适用于 scroll", () => {
+  assert.equal(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [
+        { type: "captureResponse", url_pattern: "/x", key: "k", accumulate: true },
+        {
+          type: "paginate",
+          mode: "scroll",
+          limit_pages: 3,
+          wait_capture_key: "k",
+          scroll_capture_wait: "none",
+        },
+      ],
+    }),
+    null,
+  );
+  assert.match(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [
+        {
+          type: "paginate",
+          mode: "next_button",
+          next_button_selector: { kind: "css", value: ".next" },
+          limit_pages: 3,
+          scroll_capture_wait: "none",
+        },
+      ],
+    }) ?? "",
+    /scroll_capture_wait 仅适用于 mode=scroll/,
+  );
+});
+
+test("validateRuleBody: paginate.scroll_end_if_visible 仅适用于 scroll，且须为合法选择器", () => {
+  assert.equal(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [
+        { type: "captureResponse", url_pattern: "/x", key: "k", accumulate: true },
+        {
+          type: "paginate",
+          mode: "scroll",
+          limit_pages: 3,
+          wait_capture_key: "k",
+          scroll_end_if_visible: { kind: "css", value: "text=暂时没有更多了" },
+        },
+      ],
+    }),
+    null,
+  );
+  assert.match(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [
+        {
+          type: "paginate",
+          mode: "next_button",
+          next_button_selector: { kind: "css", value: ".next" },
+          limit_pages: 3,
+          scroll_end_if_visible: { kind: "css", value: "text=end" },
+        },
+      ],
+    }) ?? "",
+    /scroll_end_if_visible 仅适用于 mode=scroll/,
   );
 });
 

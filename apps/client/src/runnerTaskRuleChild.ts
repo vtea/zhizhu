@@ -9,6 +9,8 @@ export interface TaskRunSummary {
   ok: boolean;
   rows: Record<string, unknown>[];
   captures: Record<string, unknown>;
+  /** Runner `event=done`：列表类 capture 响应条数与 aweme_list 条数之和（便于区分少抓包与入库过滤） */
+  capture_diagnostics?: Record<string, { response_count: number; aweme_list_length_sum: number }>;
   summary?: Record<string, unknown>;
   trace_path?: string | null;
   error_code?: string;
@@ -20,11 +22,16 @@ export function parseTaskRuleDoneLine(j: Record<string, unknown>): TaskRunSummar
   if (j.event !== "done") {
     return null;
   }
+  const rawDiag = j.capture_diagnostics;
   const summary: TaskRunSummary = {
     ok: j.ok === true,
     rows: Array.isArray(j.rows) ? (j.rows as Record<string, unknown>[]) : [],
     captures:
       j.captures !== null && typeof j.captures === "object" ? (j.captures as Record<string, unknown>) : {},
+    capture_diagnostics:
+      rawDiag !== null && typeof rawDiag === "object" && !Array.isArray(rawDiag)
+        ? (rawDiag as Record<string, { response_count: number; aweme_list_length_sum: number }>)
+        : undefined,
     summary:
       j.summary !== null && typeof j.summary === "object" ? (j.summary as Record<string, unknown>) : undefined,
     trace_path: typeof j.trace_path === "string" ? j.trace_path : null,

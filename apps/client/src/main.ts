@@ -1,4 +1,5 @@
 import "./loadEnv";
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage } from "electron";
@@ -59,6 +60,10 @@ import {
   startAutomationRuleSyncPeriodicLoop,
   stopAutomationRuleSyncPeriodicLoop,
 } from "./automationRuleSync";
+import {
+  postEmployeePersonalAuthFileRuleIngest,
+  readTenantDeviceApiContext,
+} from "./employeePersonalAuthFileIngest";
 import { trialRunAutomationRule } from "./automationRuleTrialRun";
 import { signalRunnerLoopTaskCancel } from "./runnerLoopCancel";
 import { clearTrialRunPrepareCancel, signalTrialRunPrepareCancel } from "./trialRunPrepareCancel";
@@ -72,6 +77,7 @@ import {
   stopRunnerLoop,
 } from "./runnerLoop";
 import { appendTaskCenterRun, listTaskCenterRuns } from "./taskCenterLedger";
+import { deleteTrialIngestStash, pruneTrialIngestStashes, readTrialIngestStash, writeTrialIngestStash } from "./trialIngestStash";
 import {
   clearTaskLocalOverride,
   getTaskLocalOverride,
@@ -1484,6 +1490,7 @@ void (function registerPrimaryInstanceAppHooks(): void {
           ok: true,
           runId: result.runId,
           ingest: result.summary.ingest,
+          preview_rows_count: result.summary.rows.length,
         });
         appendTaskCenterRun(app, {
           kind: "trial",
@@ -1497,22 +1504,76 @@ void (function registerPrimaryInstanceAppHooks(): void {
             run_id: result.runId,
             ingest_written: result.summary.ingest?.written ?? null,
             ingest_target: result.summary.ingest?.target ?? null,
+            ingest_preview_rows_count: result.summary.rows.length,
           },
           source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
         });
       } else {
         mirrorFinish({ event: "finish", ok: false, error: result.error });
-        appendTaskCenterRun(app, {
-          kind: "trial",
-          rule_id: ruleId.trim() || "—",
-          ...(trialRuleTitle.length > 0 ? { rule_display_name: trialRuleTitle } : {}),
-          started_at: trialStarted,
-          finished_at: new Date().toISOString(),
-          ok: false,
-          error_code: "TRIAL_FAILED",
-          summary: { error: result.error.slice(0, 500) },
-          source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
-        });
+        const ir =
+          "ingestRetry" in result && result.ingestRetry && typeof result.ingestRetry === "object"
+            ? result.ingestRetry
+            : null;
+        const irOk =
+          ir &&
+          typeof ir.taskId === "string" &&
+          ir.taskId.trim().length > 0 &&
+          typeof ir.ingestRuleLabel === "string" &&
+          ir.ingestRuleLabel.trim().length > 0 &&
+          Array.isArray(ir.rows) &&
+          ir.rows.length > 0 &&
+          ir.mapping &&
+          typeof ir.mapping === "object" &&
+          !Array.isArray(ir.mapping);
+        if (irOk) {
+          const runIdForLedger = randomUUID();
+          const wrote = writeTrialIngestStash(app, runIdForLedger, {
+            taskId: ir.taskId.trim(),
+            ingestRuleLabel: ir.ingestRuleLabel.trim(),
+            rows: ir.rows as Record<string, unknown>[],
+            mapping: ir.mapping as Record<string, unknown>,
+          });
+          if (wrote.ok) {
+            pruneTrialIngestStashes(app);
+            appendTaskCenterRun(app, {
+              run_id: runIdForLedger,
+              kind: "trial",
+              rule_id: ruleId.trim() || "—",
+              ...(trialRuleTitle.length > 0 ? { rule_display_name: trialRuleTitle } : {}),
+              started_at: trialStarted,
+              finished_at: new Date().toISOString(),
+              ok: false,
+              error_code: "TRIAL_FAILED",
+              summary: { error: result.error.slice(0, 500), trial_ingest_stash: true },
+              source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
+            });
+          } else {
+            console.warn("[zhizhu-client] trial ingest stash 写入失败：", wrote.error);
+            appendTaskCenterRun(app, {
+              kind: "trial",
+              rule_id: ruleId.trim() || "—",
+              ...(trialRuleTitle.length > 0 ? { rule_display_name: trialRuleTitle } : {}),
+              started_at: trialStarted,
+              finished_at: new Date().toISOString(),
+              ok: false,
+              error_code: "TRIAL_FAILED",
+              summary: { error: result.error.slice(0, 500) },
+              source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
+            });
+          }
+        } else {
+          appendTaskCenterRun(app, {
+            kind: "trial",
+            rule_id: ruleId.trim() || "—",
+            ...(trialRuleTitle.length > 0 ? { rule_display_name: trialRuleTitle } : {}),
+            started_at: trialStarted,
+            finished_at: new Date().toISOString(),
+            ok: false,
+            error_code: "TRIAL_FAILED",
+            summary: { error: result.error.slice(0, 500) },
+            source_detail: { profile_id: profileId, source, headed, capture_trace: captureTrace },
+          });
+        }
       }
       return result;
     } catch (e) {
@@ -1551,6 +1612,79 @@ void (function registerPrimaryInstanceAppHooks(): void {
       });
       return { ok: false as const, error: msg };
     }
+  });
+
+  ipcMain.handle("retry-trial-file-rule-ingest", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const ctx = readTenantDeviceApiContext(app);
+    if (!ctx) {
+      return { ok: false as const, error: "设备未绑定或缺少 API/租户信息，无法重试入库。" };
+    }
+    const o = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    const taskId = typeof o.taskId === "string" ? o.taskId.trim() : "";
+    const ingestRuleLabel = typeof o.ingestRuleLabel === "string" ? o.ingestRuleLabel.trim() : "";
+    const rows = Array.isArray(o.rows) ? (o.rows as Record<string, unknown>[]) : [];
+    const mapping = o.mapping && typeof o.mapping === "object" && !Array.isArray(o.mapping) ? (o.mapping as Record<string, unknown>) : null;
+    if (!taskId || !ingestRuleLabel || !mapping) {
+      return { ok: false as const, error: "重试入库参数不完整（taskId / ingestRuleLabel / mapping）。" };
+    }
+    if (rows.length === 0) {
+      return { ok: false as const, error: "重试入库 rows 为空。" };
+    }
+    const ingest = await postEmployeePersonalAuthFileRuleIngest(ctx, taskId, ingestRuleLabel, rows, mapping);
+    if (!ingest.ok) {
+      return { ok: false as const, error: ingest.message };
+    }
+    return {
+      ok: true as const,
+      written: ingest.written,
+      skipped: ingest.skipped,
+      target: ingest.target,
+      skip_reasons: ingest.skip_reasons,
+      skip_details: ingest.skip_details,
+      skip_details_truncated: ingest.skip_details_truncated,
+    };
+  });
+
+  ipcMain.handle("retry-trial-ingest-from-stash", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    const ctx = readTenantDeviceApiContext(app);
+    if (!ctx) {
+      return { ok: false as const, error: "设备未绑定或缺少 API/租户信息，无法重试入库。" };
+    }
+    const o = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    const stashId = typeof o.stashId === "string" ? o.stashId.trim() : "";
+    if (!stashId) {
+      return { ok: false as const, error: "缺少 stashId（与任务中心 run_id 相同）。" };
+    }
+    const data = readTrialIngestStash(app, stashId);
+    if (!data) {
+      return { ok: false as const, error: "未找到可重试入库载荷（可能已重试成功并清理，或记录已过期）。" };
+    }
+    const ingest = await postEmployeePersonalAuthFileRuleIngest(
+      ctx,
+      data.taskId,
+      data.ingestRuleLabel,
+      data.rows,
+      data.mapping,
+    );
+    if (!ingest.ok) {
+      return { ok: false as const, error: ingest.message };
+    }
+    deleteTrialIngestStash(app, stashId);
+    return {
+      ok: true as const,
+      written: ingest.written,
+      skipped: ingest.skipped,
+      target: ingest.target,
+      skip_reasons: ingest.skip_reasons,
+      skip_details: ingest.skip_details,
+      skip_details_truncated: ingest.skip_details_truncated,
+    };
   });
 
   ipcMain.handle("cancel-task-rule-run", async (event, payload: unknown) => {

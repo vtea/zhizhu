@@ -176,9 +176,31 @@ const HINT_OPEN_ENTERPRISE_REGISTER: FileRuleSkipDetailHint = {
   label: "去登记企业主体",
 };
 
+/** 员工账号删除前：线索 / 视频 / 任务 / 投放 引用计数 */
+export type BizAccountAssociationCounts = {
+  leads: number;
+  videos: number;
+  tasks: number;
+  placements: number;
+};
+
 export type WriteResult =
-  | { ok: true; id?: string; rule_id?: string; mail_sent?: boolean; mail_error?: string }
-  | { ok: false; error: string; code?: string; httpStatus?: 400 | 403 | 409 };
+  | {
+      ok: true;
+      id?: string;
+      rule_id?: string;
+      mail_sent?: boolean;
+      mail_error?: string;
+      association_counts?: BizAccountAssociationCounts;
+    }
+  | {
+      ok: false;
+      error: string;
+      code?: string;
+      httpStatus?: 400 | 403 | 409;
+      association_counts?: BizAccountAssociationCounts;
+      requires_detach?: boolean;
+    };
 
 export async function upsertAutomationRule(
   tenantId: string,
@@ -875,25 +897,229 @@ export async function createAutomationRule(tenantId: string, body: Record<string
   return { ok: true, rule_id: ruleId };
 }
 
+/** Pool / Client：事务内共享删除附属行 */
+type PgQueryableExec = { query: (text: string, params?: unknown[]) => Promise<unknown> };
+
+async function deleteAuxiliaryBizAccountRows(
+  db: PgQueryableExec,
+  tenantId: string,
+  platform: string,
+  accountId: string,
+): Promise<void> {
+  /**
+   * 这些表属于“附属衍生数据”，可在删账号时自动清理：
+   * - biz_account_metric_snapshot：指标快照
+   * - biz_device_browser_account：设备端账号映射缓存
+   */
+  await db.query(
+    `DELETE FROM biz_account_metric_snapshot
+     WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
+    [tenantId, platform, accountId],
+  );
+  await db.query(
+    `DELETE FROM biz_device_browser_account
+     WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
+    [tenantId, platform, accountId],
+  );
+}
+
+export async function getBizAccountAssociationCounts(
+  tenantId: string,
+  platform: string,
+  accountId: string,
+): Promise<BizAccountAssociationCounts> {
+  const r = await poolQuery(
+    `SELECT
+       (SELECT count(*)::int FROM biz_lead WHERE tenant_id = $1 AND platform = $2 AND account_id = $3) AS lead_cnt,
+       (SELECT count(*)::int FROM biz_video WHERE tenant_id = $1 AND platform = $2 AND account_id = $3) AS video_cnt,
+       (SELECT count(*)::int FROM biz_task WHERE tenant_id = $1 AND platform = $2 AND account_id = $3) AS task_cnt,
+       (SELECT count(*)::int FROM biz_ad_placement WHERE tenant_id = $1 AND platform = $2 AND account_id = $3) AS placement_cnt`,
+    [tenantId, platform, accountId],
+  );
+  const row = r.rows[0] as
+    | { lead_cnt?: number; video_cnt?: number; task_cnt?: number; placement_cnt?: number }
+    | undefined;
+  return {
+    leads: Number(row?.lead_cnt ?? 0),
+    videos: Number(row?.video_cnt ?? 0),
+    tasks: Number(row?.task_cnt ?? 0),
+    placements: Number(row?.placement_cnt ?? 0),
+  };
+}
+
+function detachedPlaceholderAccountId(entKey: string | null | undefined): string {
+  if (entKey == null || String(entKey).trim() === "") {
+    return "__detached__::__none__";
+  }
+  return `__detached__:${String(entKey).trim()}`;
+}
+
+const DETACHED_PLACEHOLDER_REMARK = "系统占位：员工账号删除时保留业务数据并迁移引用";
+
+async function ensureDetachedPlaceholderAccount(
+  db: PgQueryableExec,
+  tenantId: string,
+  platform: string,
+  entKey: string | null,
+): Promise<void> {
+  const accountId = detachedPlaceholderAccountId(entKey);
+  const entTrim = entKey != null && String(entKey).trim() !== "" ? String(entKey).trim() : null;
+  let entName: string | null = null;
+  if (entTrim) {
+    const nr = await db.query(
+      `SELECT display_name::text AS display_name
+       FROM biz_leads_enterprise
+       WHERE lower(trim(tenant_id::text)) = lower(trim($1::text))
+         AND lower(trim(dy_leads_enterprise_id::text)) = lower(trim($2::text))
+       LIMIT 1`,
+      [tenantId, entTrim],
+    );
+    const nrow = (nr as { rows: { display_name?: string }[] }).rows[0];
+    const dn = nrow?.display_name != null ? String(nrow.display_name).trim() : "";
+    entName = dn.length > 0 ? dn : entTrim;
+  }
+  await db.query(
+    `INSERT INTO biz_account (
+       tenant_id, platform, account_id, account_kind,
+       dy_leads_enterprise_id, dy_leads_enterprise_name,
+       ops_status, dy_display_name, remark
+     ) VALUES ($1, $2, $3, 'personal_authorized', $4, $5, 'revoked', '已解绑占位', $6)
+     ON CONFLICT (tenant_id, platform, account_id) DO NOTHING`,
+    [tenantId, platform, accountId, entTrim, entName, DETACHED_PLACEHOLDER_REMARK],
+  );
+}
+
+async function repointTableAccountForEnterpriseBucket(
+  db: PgQueryableExec,
+  table: "biz_video" | "biz_lead" | "biz_task" | "biz_ad_placement",
+  tenantId: string,
+  platform: string,
+  oldAccountId: string,
+  newAccountId: string,
+  entKey: string | null,
+): Promise<void> {
+  if (entKey == null || String(entKey).trim() === "") {
+    await db.query(
+      `UPDATE ${table} SET account_id = $4, updated_at = now()
+       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3 AND dy_leads_enterprise_id IS NULL`,
+      [tenantId, platform, oldAccountId, newAccountId],
+    );
+  } else {
+    const ent = String(entKey).trim();
+    await db.query(
+      `UPDATE ${table} SET account_id = $4, updated_at = now()
+       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+         AND lower(trim(dy_leads_enterprise_id::text)) = lower(trim($5::text))`,
+      [tenantId, platform, oldAccountId, newAccountId, ent],
+    );
+  }
+}
+
+async function detachBizAccountReferencesToPlaceholders(
+  db: PgQueryableExec,
+  tenantId: string,
+  platform: string,
+  accountId: string,
+): Promise<void> {
+  const dist = await db.query(
+    `SELECT DISTINCT dy_leads_enterprise_id
+     FROM (
+       SELECT dy_leads_enterprise_id FROM biz_video WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+       UNION
+       SELECT dy_leads_enterprise_id FROM biz_lead WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+       UNION
+       SELECT dy_leads_enterprise_id FROM biz_task WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+       UNION
+       SELECT dy_leads_enterprise_id FROM biz_ad_placement WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+     ) u`,
+    [tenantId, platform, accountId],
+  );
+  const rows = (dist as { rows: { dy_leads_enterprise_id?: string | null }[] }).rows;
+  const buckets: (string | null)[] = rows.map((r) =>
+    r.dy_leads_enterprise_id != null && String(r.dy_leads_enterprise_id).trim() !== ""
+      ? String(r.dy_leads_enterprise_id).trim()
+      : null,
+  );
+  for (const entKey of buckets) {
+    await ensureDetachedPlaceholderAccount(db, tenantId, platform, entKey);
+    const newId = detachedPlaceholderAccountId(entKey);
+    await repointTableAccountForEnterpriseBucket(db, "biz_video", tenantId, platform, accountId, newId, entKey);
+    await repointTableAccountForEnterpriseBucket(db, "biz_lead", tenantId, platform, accountId, newId, entKey);
+    await repointTableAccountForEnterpriseBucket(db, "biz_task", tenantId, platform, accountId, newId, entKey);
+    await repointTableAccountForEnterpriseBucket(db, "biz_ad_placement", tenantId, platform, accountId, newId, entKey);
+  }
+}
+
+/**
+ * 控制台删除员工账号（需先 POST 校验密码）：
+ * - 若存在业务引用且未勾选确认，返回 DETACH_NOT_CONFIRMED；
+ * - 否则将引用迁移到每主体桶下的占位 `biz_account`，再删除目标账号。
+ */
+export async function detachAndDeleteBizAccount(
+  tenantId: string,
+  platform: string,
+  accountId: string,
+  opts: { confirmDetach: boolean },
+): Promise<WriteResult> {
+  if (accountId.startsWith("__detached__:")) {
+    return { ok: false, error: "不可删除系统占位账号", code: "FORBIDDEN", httpStatus: 403 };
+  }
+  const counts = await getBizAccountAssociationCounts(tenantId, platform, accountId);
+  const total = counts.leads + counts.videos + counts.tasks + counts.placements;
+  const ex = await poolQuery(
+    `SELECT 1 FROM biz_account WHERE tenant_id = $1 AND platform = $2 AND account_id = $3 LIMIT 1`,
+    [tenantId, platform, accountId],
+  );
+  if (ex.rowCount === 0) {
+    return { ok: false, error: "账号不存在" };
+  }
+  if (total > 0 && !opts.confirmDetach) {
+    return {
+      ok: false,
+      error: "存在关联数据，请勾选「解除关联并删除该账号」后重试",
+      code: "DETACH_NOT_CONFIRMED",
+      httpStatus: 409,
+      association_counts: counts,
+      requires_detach: true,
+    };
+  }
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    if (total > 0) {
+      await detachBizAccountReferencesToPlaceholders(client, tenantId, platform, accountId);
+    }
+    await deleteAuxiliaryBizAccountRows(client, tenantId, platform, accountId);
+    const r = await client.query(`DELETE FROM biz_account WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`, [
+      tenantId,
+      platform,
+      accountId,
+    ]);
+    if (r.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "账号不存在" };
+    }
+    await client.query("COMMIT");
+    const zero: BizAccountAssociationCounts = { leads: 0, videos: 0, tasks: 0, placements: 0 };
+    return { ok: true, association_counts: zero };
+  } catch (e) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* noop */
+    }
+    return { ok: false, error: messageForBusinessError(e) };
+  } finally {
+    client.release();
+  }
+}
+
 export async function deleteBizAccount(tenantId: string, platform: string, accountId: string): Promise<WriteResult> {
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
-    /**
-     * 这些表属于“附属衍生数据”，可在删账号时自动清理：
-     * - biz_account_metric_snapshot：指标快照
-     * - biz_device_browser_account：设备端账号映射缓存
-     */
-    await client.query(
-      `DELETE FROM biz_account_metric_snapshot
-       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
-      [tenantId, platform, accountId],
-    );
-    await client.query(
-      `DELETE FROM biz_device_browser_account
-       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
-      [tenantId, platform, accountId],
-    );
+    await deleteAuxiliaryBizAccountRows(client, tenantId, platform, accountId);
     const r = await client.query(`DELETE FROM biz_account WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`, [
       tenantId,
       platform,

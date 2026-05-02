@@ -6,6 +6,8 @@ import { Banner, Button, Field, OverlaySectionCard, SelectInput, TextInput } fro
 import { listAllAccounts } from "@/api/accounts";
 import { parseYmd, ymdDateInputsFromSearchWithStrip } from "@/api/analytics-filters";
 import { getApiBaseUrl } from "@/api/env";
+import { ApiError } from "@/api/http";
+import { createAdPlacement } from "@/api/adPlacements";
 import { createVideoOffline, deleteVideo, listVideos, patchVideo, type VideoSortKey } from "@/api/videos";
 import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
 import { useStripInvalidAccountSearchParam } from "@/hooks/useStripInvalidAccountSearchParam";
@@ -14,13 +16,56 @@ import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
 import { accountFilterSelectValue } from "@/lib/accountFilterSelectValue";
 import { lastPage } from "@/lib/pagination";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
+import { videoPageOpenHref } from "@/lib/videoPageOpenHref";
 import { normalizeDouyinVideoUrlFromShare } from "@/utils/douyinVideoUrlFromShare";
-import type { MockVideo } from "@/mocks/seed";
+import { accountEligibleForOpsBinding, type MockVideo } from "@/mocks/seed";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 const VIDEO_PAGE_SIZES = [10, 30, 50] as const;
+
+function localYmdToday(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function countOrNull(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(Number(v))) {
+    return null;
+  }
+  return Math.floor(Number(v));
+}
+
+function parseSpendRequired(raw: string): number {
+  const t = raw.trim();
+  if (t === "") {
+    throw new Error("请填写投放金额");
+  }
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error("投放金额须为大于 0 的数字");
+  }
+  return n;
+}
+
+function formatPlacementCreateError(e: unknown): string {
+  if (e instanceof ApiError && e.bodyText) {
+    try {
+      const j = JSON.parse(e.bodyText) as { code?: string; error?: string };
+      if (j.code === "23505" || /23505|同一自然日|已存在投放行/.test(String(j.error ?? ""))) {
+        return "该账号下此视频在「今天」已有投放记录，请前往投放管理修改当日行，或改日后再建。";
+      }
+    } catch {
+      /* use default */
+    }
+  }
+  return formatApiErrorMessage(e, "创建投放失败");
+}
+
+const VIDEO_PLACEMENT_OPS_DISABLED_TITLE =
+  "该账号暂停或撤销绑定，无法新建投放，请先在员工账号管理中恢复。";
 
 function parsePageSize(raw: string | null): number {
   const n = Number(raw);
@@ -117,23 +162,6 @@ function videoAccountCell(r: MockVideo) {
       {showIdSubline ? <div className="truncate font-mono text-xs text-zz-muted">{id}</div> : null}
     </div>
   );
-}
-
-/** 列表标题外链：仅允许 normalize 后的 http(s) URL。 */
-function videoPageOpenHref(url: string | null | undefined): string | null {
-  const normalized = normalizeDouyinVideoUrlFromShare(url ?? "").trim();
-  if (!normalized) {
-    return null;
-  }
-  try {
-    const u = new URL(normalized);
-    if (u.protocol !== "http:" && u.protocol !== "https:") {
-      return null;
-    }
-    return u.href;
-  } catch {
-    return null;
-  }
 }
 
 const VIDEO_TABLE_CLASS =
@@ -308,6 +336,10 @@ export function VideosPage() {
   const [offCover, setOffCover] = useState("");
   const [offPublish, setOffPublish] = useState("");
   const [offErr, setOffErr] = useState<string | null>(null);
+  const [placementVideo, setPlacementVideo] = useState<MockVideo | null>(null);
+  const [placementSpend, setPlacementSpend] = useState("");
+  const [placementErr, setPlacementErr] = useState<string | null>(null);
+  const [placementFlash, setPlacementFlash] = useState<string | null>(null);
 
   useEffect(() => {
     const { from, to, nextSearch } = ymdDateInputsFromSearchWithStrip(search);
@@ -321,6 +353,20 @@ export function VideosPage() {
   useEffect(() => {
     setSelectedIds(new Set());
   }, [accountId, dyVideoId, sort, from, to, selectedDyLeadsEnterpriseId, tenantId, pageSize]);
+
+  useEffect(() => {
+    setPlacementVideo(null);
+    setPlacementSpend("");
+    setPlacementErr(null);
+  }, [selectedDyLeadsEnterpriseId, tenantId]);
+
+  useEffect(() => {
+    if (!placementFlash) {
+      return;
+    }
+    const t = window.setTimeout(() => setPlacementFlash(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [placementFlash]);
 
   const accountsQuery = useQuery({
     queryKey: ["accounts-all", tenantId, selectedDyLeadsEnterpriseId ?? null],
@@ -553,7 +599,40 @@ export function VideosPage() {
     },
   });
 
+  const createPlacementMut = useMutation({
+    mutationFn: async (p: { video: MockVideo; spendAmount: number }) => {
+      const { video, spendAmount } = p;
+      await createAdPlacement(tenantId, {
+        platform: video.platform,
+        account_id: String(video.account_id),
+        dy_video_id: video.dy_video_id,
+        ad_date: localYmdToday(),
+        spend_amount: spendAmount,
+        pre_like_count: countOrNull(video.dy_like_count),
+        pre_comment_count: countOrNull(video.dy_comment_count),
+        pre_favorite_count: countOrNull(video.dy_favorite_count),
+        pre_share_count: countOrNull(video.dy_share_count),
+        is_current: false,
+      });
+    },
+    onMutate: () => setPlacementErr(null),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["ad-placements", tenantId] });
+      setPlacementVideo(null);
+      setPlacementSpend("");
+      setPlacementErr(null);
+      setPlacementFlash("已创建投放，可在投放管理中查看。");
+    },
+    onError: (e) => {
+      setPlacementErr(formatPlacementCreateError(e));
+    },
+  });
+
   function openAddModal() {
+    setPlacementVideo(null);
+    setPlacementSpend("");
+    setPlacementErr(null);
+    setEditVideo(null);
     setOffErr(null);
     setOffDyVideoId("");
     setOffTitle("");
@@ -608,15 +687,21 @@ export function VideosPage() {
       {
         id: "ops",
         header: "操作",
-        className: "min-w-[11rem] w-[11rem]",
-        cell: (r) => (
+        className: "min-w-[15rem] w-[15rem]",
+        cell: (r) => {
+          const accRow = accountsQuery.data?.find((a) => String(a.account_id) === String(r.account_id));
+          const placementOpsOk = accRow == null ? true : accountEligibleForOpsBinding(accRow);
+          return (
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="secondary"
               size="sm"
-              disabled={bulkDelMut.isPending}
+              disabled={bulkDelMut.isPending || createPlacementMut.isPending}
               onClick={() => {
                 setVideoMutErr(null);
+                setPlacementVideo(null);
+                setPlacementSpend("");
+                setPlacementErr(null);
                 setEditVideo(r);
                 setEditTitle(r.dy_title ?? "");
                 setEditVideoUrl(r.dy_video_url ?? "");
@@ -655,10 +740,29 @@ export function VideosPage() {
               编辑元数据
             </Button>
             <Button
+              variant="secondary"
+              size="sm"
+              title={placementOpsOk ? undefined : VIDEO_PLACEMENT_OPS_DISABLED_TITLE}
+              disabled={
+                bulkDelMut.isPending ||
+                !placementOpsOk ||
+                createPlacementMut.isPending
+              }
+              onClick={() => {
+                setPlacementErr(null);
+                setPlacementSpend("");
+                setEditVideo(null);
+                setPlacementVideo(r);
+              }}
+            >
+              投放
+            </Button>
+            <Button
               variant="danger"
               size="sm"
               disabled={
                 bulkDelMut.isPending ||
+                createPlacementMut.isPending ||
                 (delMut.isPending &&
                   delMut.variables?.dy_video_id === r.dy_video_id &&
                   delMut.variables?.platform === r.platform)
@@ -672,15 +776,18 @@ export function VideosPage() {
               删除
             </Button>
           </div>
-        ),
+          );
+        },
       },
     ];
     return [...selectCol, ...VIDEO_COLUMNS_BASE, ...ops];
   }, [
+    accountsQuery.data,
     apiBase,
     allOnPageSelected,
     someOnPageSelected,
     bulkDelMut.isPending,
+    createPlacementMut.isPending,
     delMut,
     selectedIds,
     toggleRowSelected,
@@ -854,9 +961,29 @@ export function VideosPage() {
             )}
           </Field>
         </div>
-        <Button variant="secondary" size="sm" className="shrink-0 self-start sm:self-end" onClick={openAddModal}>
-          新增
-        </Button>
+        <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2 sm:self-end">
+          <Button variant="secondary" size="sm" onClick={openAddModal}>
+            新增
+          </Button>
+          {apiBase ? (
+            <>
+              {selectedIds.size > 0 ? (
+                <span className="text-sm text-zz-muted">
+                  已选 <span className="font-mono text-zz-near">{selectedIds.size}</span> 条
+                </span>
+              ) : null}
+              <Button
+                variant="danger"
+                size="sm"
+                isLoading={bulkDelMut.isPending}
+                disabled={selectedIds.size === 0 || bulkDelMut.isPending || delMut.isPending}
+                onClick={bulkDeleteSelected}
+              >
+                删除选中
+              </Button>
+            </>
+          ) : null}
+        </div>
       </div>
       <OverlaySectionCard
         open={addModalOpen}
@@ -1015,6 +1142,110 @@ export function VideosPage() {
             )}
       </OverlaySectionCard>
       {videoMutErr ? <Banner kind="error">{videoMutErr}</Banner> : null}
+      {placementFlash ? (
+        <Banner kind="ok" className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span>{placementFlash}</span>
+          <Link className="text-zz-blue hover:underline" to={`/t/${encodeURIComponent(tenantId)}/ad-placements`}>
+            打开投放管理
+          </Link>
+        </Banner>
+      ) : null}
+      {apiBase && placementVideo ? (
+        <OverlaySectionCard
+          open
+          onClose={() => {
+            if (createPlacementMut.isPending) {
+              return;
+            }
+            setPlacementVideo(null);
+            setPlacementSpend("");
+            setPlacementErr(null);
+          }}
+          title="从视频新建投放"
+          titleAs="h2"
+          description="将使用下列视频与账号信息，投放日为今天（本地日期）；投前互动数取自当前列表指标。仅需填写投放金额。"
+        >
+          <div className="mt-3 space-y-3 rounded-lg border border-zz-border-light bg-zz-surface-muted/40 p-3 text-sm">
+            <div>
+              <div className="text-xs text-zz-muted">发布方账号</div>
+              <div className="mt-0.5">{videoAccountCell(placementVideo)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-zz-muted">抖音视频 ID</div>
+              <div className="mt-0.5 font-mono text-xs text-zz-near">{placementVideo.dy_video_id}</div>
+            </div>
+            <div>
+              <div className="text-xs text-zz-muted">投放日</div>
+              <div className="mt-0.5 tabular-nums text-zz-near">{localYmdToday()}</div>
+            </div>
+            <div>
+              <div className="text-xs text-zz-muted">投前（赞 / 评 / 藏 / 转）</div>
+              <div className="mt-0.5 tabular-nums text-zz-near">
+                {[
+                  placementVideo.dy_like_count,
+                  placementVideo.dy_comment_count,
+                  placementVideo.dy_favorite_count,
+                  placementVideo.dy_share_count,
+                ]
+                  .map((x) => (x != null && Number.isFinite(Number(x)) ? formatNumber(Number(x)) : "—"))
+                  .join(" / ")}
+              </div>
+            </div>
+          </div>
+          {placementErr ? (
+            <div className="mt-3">
+              <Banner kind="error">{placementErr}</Banner>
+            </div>
+          ) : null}
+          <div className="mt-4">
+            <Field label="投放金额">
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  aria-describedby={describedBy}
+                  inputMode="decimal"
+                  value={placementSpend}
+                  onChange={(ev) => setPlacementSpend(ev.target.value)}
+                  placeholder="大于 0 的数字，支持小数"
+                />
+              )}
+            </Field>
+          </div>
+          <div className="mt-5 flex flex-wrap gap-2 border-t border-zz-border-light pt-4">
+            <Button
+              variant="primary"
+              size="md"
+              isLoading={createPlacementMut.isPending}
+              onClick={() => {
+                if (!placementVideo) {
+                  return;
+                }
+                setPlacementErr(null);
+                try {
+                  const spendAmount = parseSpendRequired(placementSpend);
+                  createPlacementMut.mutate({ video: placementVideo, spendAmount });
+                } catch (e) {
+                  setPlacementErr(e instanceof Error ? e.message : "金额无效");
+                }
+              }}
+            >
+              {createPlacementMut.isPending ? "提交中…" : "创建投放"}
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={createPlacementMut.isPending}
+              onClick={() => {
+                setPlacementVideo(null);
+                setPlacementSpend("");
+                setPlacementErr(null);
+              }}
+            >
+              取消
+            </Button>
+          </div>
+        </OverlaySectionCard>
+      ) : null}
       {apiBase && editVideo ? (
         <OverlaySectionCard
           open
@@ -1292,24 +1523,6 @@ export function VideosPage() {
         </OverlaySectionCard>
       ) : null}
       {videosQuery.isError ? <Banner kind="error">加载失败：{formatQueryError(videosQuery.error)}</Banner> : null}
-      {apiBase ? (
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          {selectedIds.size > 0 ? (
-            <span className="text-sm text-zz-muted">
-              已选 <span className="font-mono text-zz-near">{selectedIds.size}</span> 条
-            </span>
-          ) : null}
-          <Button
-            variant="danger"
-            size="sm"
-            isLoading={bulkDelMut.isPending}
-            disabled={selectedIds.size === 0 || bulkDelMut.isPending || delMut.isPending}
-            onClick={bulkDeleteSelected}
-          >
-            删除选中
-          </Button>
-        </div>
-      ) : null}
       <DataTable
         columns={videoColumns}
         rows={videosQuery.data?.items ?? []}

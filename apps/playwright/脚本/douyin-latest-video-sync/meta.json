@@ -1,6 +1,6 @@
 {
   "rule_id": "douyin-latest-video-sync",
-  "name": "抖音最新视频同步",
+  "name": "抖音视频同步",
   "version": "0.1.0",
   "target": "biz_video",
   "owner": "growth-ops",
@@ -17,11 +17,11 @@
       },
       "account_id": {
         "type": "string",
-        "description": "单账号模式下必填（Runner 也会回退 task.account_id）"
+        "description": "单账号模式：与 target_account_id 二选一至少其一；Runner 也可从任务顶层 account_id 合并进 params"
       },
       "dy_homepage_url": {
         "type": "string",
-        "description": "员工抖音主页 URL；优先于规则默认短链，用于确保采集目标账号正确"
+        "description": "员工抖音主页 URL；可显式指定采集入口。未提供时由 Runner 按 params 中的业务账号锚点（account_id 或 target_account_id 等）合并员工档案主页，缺失则任务校验失败"
       },
       "target_dy_unique_id": {
         "type": "string",
@@ -33,7 +33,7 @@
       },
       "target_account_id": {
         "type": "string",
-        "description": "可选：业务账号 id，可与 account_id 二选一；用于作者归属与行合并"
+        "description": "业务账号 id。单账号模式（mode=single_account）下与 account_id 二选一至少其一；其它场景可选。用于作者归属与行合并"
       },
       "dy_leads_enterprise_id": {
         "type": "string",
@@ -54,7 +54,7 @@
       "biz_video_list_mode": {
         "type": "string",
         "enum": ["full", "recent_72h"],
-        "default": "recent_72h",
+        "default": "full",
         "description": "full：尽量采集并入库主页全部视频；recent_72h：按发布时间过滤，仅保留任务锚点前推 72 小时内的视频"
       },
       "biz_video_recent_hours": {
@@ -79,6 +79,32 @@
       }
     },
     "required": ["mode", "biz_video_list_mode"],
-    "additionalProperties": true
+    "additionalProperties": true,
+    "allOf": [
+      {
+        "if": {
+          "properties": { "mode": { "const": "single_account" } },
+          "required": ["mode"]
+        },
+        "then": {
+          "anyOf": [
+            { "required": ["account_id"] },
+            { "required": ["target_account_id"] }
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": { "mode": { "const": "enterprise_all_accounts" } },
+          "required": ["mode"]
+        },
+        "then": {
+          "required": ["account_ids"],
+          "properties": {
+            "account_ids": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          }
+        }
+      }
+    ]
   }
 }

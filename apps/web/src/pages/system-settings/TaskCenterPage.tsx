@@ -14,18 +14,18 @@ import {
   type TaskRunRow,
 } from "@/api/consoleExtras";
 import { listAllAccounts } from "@/api/accounts";
-import { listRules } from "@/api/rules";
+import { getRule, listRules } from "@/api/rules";
 import { getApiBaseUrl } from "@/api/env";
 import { listDevices } from "@/api/devices";
 import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
 import { useTenantId } from "@/hooks/useTenantId";
-import { sameBizAccountId } from "@/lib/bizAccountId";
+import { normalizeBizAccountIdField, sameBizAccountId } from "@/lib/bizAccountId";
 import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
 import { formatDateTime } from "@/lib/format";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
 import { lastPage } from "@/lib/pagination";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 const PAGE_SIZE = 12;
@@ -61,8 +61,8 @@ export function TaskCenterPage() {
   const [ruleId, setRuleId] = useState("");
   const [browserProfileSlug, setBrowserProfileSlug] = useState("");
   const [collectMode, setCollectMode] = useState<"single_account" | "enterprise_all_accounts">("single_account");
-  const [bizVideoListMode, setBizVideoListMode] = useState<"full" | "recent_72h">("recent_72h");
-  const [limitN, setLimitN] = useState("5000");
+  const [bizVideoListMode, setBizVideoListMode] = useState<"full" | "recent_72h">("full");
+  const [limitN, setLimitN] = useState("20");
   const [taskStatus, setTaskStatus] = useState("");
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -108,8 +108,8 @@ export function TaskCenterPage() {
     setBanner(null);
     setCreateModalOpen(false);
     setCollectMode("single_account");
-    setBizVideoListMode("recent_72h");
-    setLimitN("5000");
+    setBizVideoListMode("full");
+    setLimitN("20");
   }, [tenantId]);
 
   useEffect(() => {
@@ -131,6 +131,48 @@ export function TaskCenterPage() {
     () => (rulesQ.data ?? []).filter((r) => r.status === "published" && r.rule_id.trim().length > 0),
     [rulesQ.data],
   );
+  const selectedRule = useMemo(
+    () => publishedRules.find((item) => item.rule_id === ruleId.trim()) ?? null,
+    [publishedRules, ruleId],
+  );
+  const selectedRuleMetaQ = useQuery({
+    queryKey: ["automation-rule-meta", tenantId, ruleId || ""],
+    queryFn: async () => {
+      if (!ruleId.trim()) {
+        return null;
+      }
+      return getRule(tenantId, ruleId.trim());
+    },
+    enabled: api && ruleId.trim().length > 0,
+  });
+  const isDouyinLatestVideoRule = useMemo(() => {
+    const id = ruleId.trim();
+    if (id === "douyin-latest-video-sync") {
+      return true;
+    }
+    const detail = selectedRuleMetaQ.data;
+    if (!detail || !detail.meta || typeof detail.meta !== "object" || Array.isArray(detail.meta)) {
+      const name = (selectedRule?.name ?? "").trim();
+      return name.includes("抖音") || name.toLowerCase().includes("douyin");
+    }
+    const meta = detail.meta as Record<string, unknown>;
+    const topRuleId = typeof meta.rule_id === "string" ? meta.rule_id.trim() : "";
+    if (topRuleId === "douyin-latest-video-sync") {
+      return true;
+    }
+    const bundle = meta.bundle;
+    if (bundle && typeof bundle === "object" && !Array.isArray(bundle)) {
+      const bundleRuleId =
+        typeof (bundle as Record<string, unknown>).rule_id === "string"
+          ? ((bundle as Record<string, unknown>).rule_id as string).trim()
+          : "";
+      if (bundleRuleId === "douyin-latest-video-sync") {
+        return true;
+      }
+    }
+    return false;
+  }, [ruleId, selectedRuleMetaQ.data, selectedRule?.name]);
+  const prevRuleKindRef = useRef<"douyin" | "other" | null>(null);
 
   useEffect(() => {
     if (!ruleId) {
@@ -140,6 +182,47 @@ export function TaskCenterPage() {
       setRuleId("");
     }
   }, [publishedRules, ruleId]);
+  useEffect(() => {
+    if (!ruleId.trim()) {
+      setLimitN("20");
+      prevRuleKindRef.current = null;
+      return;
+    }
+    if (
+      ruleId.trim() !== "douyin-latest-video-sync" &&
+      selectedRuleMetaQ.isPending &&
+      !selectedRuleMetaQ.data
+    ) {
+      return;
+    }
+    const maxN = isDouyinLatestVideoRule ? 10000 : 100;
+    const raw = Number(limitN);
+    const currentKind: "douyin" | "other" = isDouyinLatestVideoRule ? "douyin" : "other";
+    const prevKind = prevRuleKindRef.current;
+    if (prevKind !== currentKind) {
+      if (currentKind === "douyin") {
+        /**
+         * 其它规则切到抖音规则时，若仍是低位默认值（<=100）或非法值，
+         * 自动提升到抖音建议上限，避免「全部视频」默认仍被 20 条卡住。
+         */
+        if (!Number.isFinite(raw) || raw < 1 || raw <= 100) {
+          setLimitN("5000");
+          prevRuleKindRef.current = currentKind;
+          return;
+        }
+      } else if (!Number.isFinite(raw) || raw < 1 || raw > 100) {
+        setLimitN("20");
+        prevRuleKindRef.current = currentKind;
+        return;
+      }
+      prevRuleKindRef.current = currentKind;
+      return;
+    }
+    if (!Number.isFinite(raw) || raw < 1 || raw > maxN) {
+      setLimitN(currentKind === "douyin" ? "5000" : "20");
+    }
+    prevRuleKindRef.current = currentKind;
+  }, [ruleId, isDouyinLatestVideoRule, limitN, selectedRuleMetaQ.isPending, selectedRuleMetaQ.data]);
 
   const runsQ = useQuery({
     queryKey: ["task-runs", tenantId, selectedDyLeadsEnterpriseId ?? null, runPage],
@@ -187,8 +270,15 @@ export function TaskCenterPage() {
       if (!ruleId.trim()) {
         throw new Error("请选择同步规则");
       }
+      if (
+        ruleId.trim() !== "douyin-latest-video-sync" &&
+        selectedRuleMetaQ.isPending &&
+        !selectedRuleMetaQ.data
+      ) {
+        throw new Error("规则详情加载中，请稍后再创建任务。");
+      }
       const eligibleAccounts = (accountsQ.data ?? [])
-        .map((a) => (typeof a.account_id === "string" ? a.account_id.trim() : ""))
+        .map((a) => normalizeBizAccountIdField(a.account_id))
         .filter((x) => x.length > 0);
       if (collectMode === "single_account" && !accountId) {
         throw new Error("单账号模式需选择业务账号");
@@ -197,8 +287,9 @@ export function TaskCenterPage() {
         throw new Error("当前主体下无可用账号可采集");
       }
       const n = Number(limitN);
-      if (!Number.isFinite(n) || n < 1 || n > 10000) {
-        throw new Error("最大入库条数需为 1-10000");
+      const limitMax = isDouyinLatestVideoRule ? 10000 : 100;
+      if (!Number.isFinite(n) || n < 1 || n > limitMax) {
+        throw new Error(isDouyinLatestVideoRule ? "最大入库条数需为 1-10000" : "固定数量需为 1-100");
       }
       const finalAccountId = collectMode === "single_account" ? accountId : (accountId || eligibleAccounts[0] || "");
       if (!finalAccountId) {
@@ -209,13 +300,13 @@ export function TaskCenterPage() {
           ? (accountsQ.data ?? []).find((a) => sameBizAccountId(a.account_id, finalAccountId))
           : undefined;
       const dyHomepageFromAccount =
-        ruleId.trim() === "douyin-latest-video-sync" &&
+        isDouyinLatestVideoRule &&
         typeof selectedStaff?.dy_user_url === "string" &&
         selectedStaff.dy_user_url.trim().length > 0
           ? selectedStaff.dy_user_url.trim()
           : null;
       if (
-        ruleId.trim() === "douyin-latest-video-sync" &&
+        isDouyinLatestVideoRule &&
         collectMode === "single_account" &&
         !dyHomepageFromAccount
       ) {
@@ -223,7 +314,6 @@ export function TaskCenterPage() {
           "所选业务账号未维护抖音主页链接。请先在「员工账号管理」补全该账号的主页 URL，或先执行一次「员工个人号授权同步」后再创建任务。",
         );
       }
-      const isDouyinLatestVideoRule = ruleId.trim() === "douyin-latest-video-sync";
       const payload: Record<string, unknown> = {
         ...(browserProfileSlug.trim() ? { browser_profile_slug: browserProfileSlug.trim() } : {}),
         params: {
@@ -241,7 +331,6 @@ export function TaskCenterPage() {
       const selectedEnterprise = (enterprisesQ.data?.enterprises ?? []).find((item) =>
         sameDyLeadsEnterpriseId(item.dy_leads_enterprise_id, enterpriseId.trim()),
       );
-      const selectedRule = publishedRules.find((item) => item.rule_id === ruleId.trim());
       return createSyncDataTask(
         tenantId,
         {
@@ -263,8 +352,8 @@ export function TaskCenterPage() {
       setRuleId("");
       setBrowserProfileSlug("");
       setCollectMode("single_account");
-      setBizVideoListMode("recent_72h");
-      setLimitN("5000");
+      setBizVideoListMode("full");
+      setLimitN("20");
       setCreateModalOpen(false);
       setBanner({ kind: "ok", text: summary });
       await qc.invalidateQueries({ queryKey: ["tasks", tenantId] });
@@ -598,7 +687,7 @@ export function TaskCenterPage() {
                     id={id}
                     value={bizVideoListMode}
                     onChange={(ev) => setBizVideoListMode(ev.target.value === "full" ? "full" : "recent_72h")}
-                    disabled={ruleId.trim() !== "douyin-latest-video-sync"}
+                    disabled={!isDouyinLatestVideoRule}
                   >
                     <option value="full">全部视频（抓到即入库，已存在自动更新）</option>
                     <option value="recent_72h">最新视频（仅发布日期最近三天）</option>
@@ -613,7 +702,7 @@ export function TaskCenterPage() {
                     mono
                     value={limitN}
                     onChange={(ev) => setLimitN(ev.target.value.replace(/\D/g, ""))}
-                    placeholder="1-10000"
+                    placeholder={isDouyinLatestVideoRule ? "1-10000" : "1-100"}
                   />
                 )}
               </Field>

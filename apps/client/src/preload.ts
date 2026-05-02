@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type {
   ApiReachSnapshot,
   AutomationRuleListDto,
+  AutomationRuleTrialIngestRetryPayload,
   AutomationRuleRunnerLoopStatusDto,
   AutomationRuleSyncOutcomeDto,
   AutomationRuleSyncStatusDto,
@@ -11,6 +12,7 @@ import type {
   ClientStateDto,
   ClientUpdateCheckDto,
   ConsolePathKey,
+  FileRuleSkipDetailDto,
   ForcePlaywrightShellSyncResultDto,
   OpenUrlResult,
   PlaywrightBrowserProfileRecord,
@@ -92,6 +94,34 @@ export type ZhizhuClientApi = {
     headed?: boolean;
     captureTrace?: boolean;
   }) => Promise<AutomationRuleTrialRunResultDto>;
+  /** 不重新跑采集，仅对上次试跑已算出的 rows 再 POST file-rule-ingest（须已绑定设备） */
+  retryTrialFileRuleIngest: (
+    input: AutomationRuleTrialIngestRetryPayload,
+  ) => Promise<
+    | {
+        ok: true;
+        written: number;
+        skipped: number;
+        target: string | null;
+        skip_reasons: Record<string, number> | null;
+        skip_details: FileRuleSkipDetailDto[];
+        skip_details_truncated: boolean;
+      }
+    | { ok: false; error: string }
+  >;
+  /** 从 userData 侧车按任务中心 run_id 读入 ingest 载荷并重试 POST（成功后会删除侧车） */
+  retryTrialIngestFromStash: (input: { stashId: string }) => Promise<
+    | {
+        ok: true;
+        written: number;
+        skipped: number;
+        target: string | null;
+        skip_reasons: Record<string, number> | null;
+        skip_details: FileRuleSkipDetailDto[];
+        skip_details_truncated: boolean;
+      }
+    | { ok: false; error: string }
+  >;
   /**
    * 终止 task-rule 子进程。**务必传入 `target`**：`invoke(..., opts ?? {})` 在缺省时会把 `target` 置为未定义，主进程会按 **`all`** 处理（试跑 + 队列子进程一并杀）。
    * - `trial`：仅本机试跑；不触发队列「停止后续账号」标志
@@ -252,6 +282,8 @@ const api: ZhizhuClientApi = {
   forceAutomationRuleSync: () => ipcRenderer.invoke("force-automation-rule-sync"),
   getAutomationRuleSyncStatus: () => ipcRenderer.invoke("get-automation-rule-sync-status"),
   trialRunAutomationRule: (input) => ipcRenderer.invoke("trial-run-automation-rule", input),
+  retryTrialFileRuleIngest: (input) => ipcRenderer.invoke("retry-trial-file-rule-ingest", input),
+  retryTrialIngestFromStash: (input) => ipcRenderer.invoke("retry-trial-ingest-from-stash", input),
   cancelTaskRuleRun: (opts) => ipcRenderer.invoke("cancel-task-rule-run", opts ?? {}),
   openAutomationRuleTrace: (runId) => ipcRenderer.invoke("open-automation-rule-trace", runId),
   openAutomationRuleCodegen: (input) => ipcRenderer.invoke("open-automation-rule-codegen", input),

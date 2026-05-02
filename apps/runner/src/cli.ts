@@ -13,7 +13,9 @@ import {
 } from "@zhizhu/playwright-browser-fingerprint";
 import { validateRuleBody, type RuleBody } from "@zhizhu/playwright-rule-schema";
 
+import { buildCaptureDiagnostics } from "./ruleRunner/captureDiagnostics";
 import { runRule } from "./ruleRunner";
+import { isTransientNetNavError, sleepMs } from "./ruleRunner/transientNavErrors";
 import { loadFileRuleBundle, loadOptionalFileRuleSidecars } from "./fileRuleSource";
 
 /** 与客户端 `resolveZhizhuRunnerConsoleBase` 对齐：`goto.path` 拼 host；stdin > meta > env → 合法 origin */
@@ -258,7 +260,39 @@ async function runPersistentBrowserSession(options: {
 
     const page = context.pages()[0] ?? (await context.newPage());
     if (start.href !== "about:blank") {
-      await page.goto(start.href, { waitUntil: "domcontentloaded" });
+      /**
+       * 与规则 `goto.nav_retry_count` 对齐的默认：headed-login / task-persistent 首跳也常遇瞬时 net:: 断连。
+       * 可选 `ZHIZHU_SESSION_GOTO_RETRIES`（0–5，额外重试次数）、`ZHIZHU_SESSION_GOTO_BACKOFF_MS`（200–10000）。
+       */
+      const extraRetriesRaw = process.env.ZHIZHU_SESSION_GOTO_RETRIES?.trim();
+      const extraRetries =
+        extraRetriesRaw !== undefined && extraRetriesRaw.length > 0
+          ? Math.min(5, Math.max(0, Math.floor(Number(extraRetriesRaw))))
+          : 2;
+      const backoffRaw = process.env.ZHIZHU_SESSION_GOTO_BACKOFF_MS?.trim();
+      const backoffMs =
+        backoffRaw !== undefined && backoffRaw.length > 0
+          ? Math.min(10_000, Math.max(200, Math.floor(Number(backoffRaw))))
+          : 1000;
+      const maxAttempts = 1 + extraRetries;
+      const gotoOpts = { waitUntil: "domcontentloaded" as const };
+      let lastMsg = "";
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+          await sleepMs(backoffMs);
+        }
+        try {
+          await page.goto(start.href, gotoOpts);
+          break;
+        } catch (e) {
+          lastMsg = e instanceof Error ? e.message : String(e);
+          const transient = isTransientNetNavError(lastMsg);
+          if (!transient || attempt === maxAttempts - 1) {
+            const retryNote = attempt > 0 ? `（已重试 ${attempt} 次）` : "";
+            throw new Error(`${lastMsg}${retryNote}`);
+          }
+        }
+      }
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -564,6 +598,7 @@ async function cmdTaskRule(): Promise<void> {
       ok: false,
       rows: [],
       captures: {},
+      capture_diagnostics: buildCaptureDiagnostics({}),
       step_durations: [],
       error_code: "INTERNAL_ERROR",
       error_message: e instanceof Error ? e.message : String(e),
@@ -605,6 +640,7 @@ async function cmdTaskRule(): Promise<void> {
       ok: result.ok,
       rows: result.rows,
       captures: result.captures,
+      capture_diagnostics: buildCaptureDiagnostics(result.captures as Record<string, unknown>),
       summary,
       trace_path: tracePath,
       file_rule_meta: fileRuleMeta,

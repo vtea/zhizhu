@@ -193,6 +193,15 @@ function safeJsonPretty(value: unknown): string {
   }
 }
 
+/** 试跑失败且主进程已写入侧车时可从任务中心重试入库 */
+function hasTrialIngestStashFlag(rec: TaskCenterRunRecordDto): boolean {
+  const s = rec.summary;
+  if (!s || typeof s !== "object") {
+    return false;
+  }
+  return s.trial_ingest_stash === true;
+}
+
 /** 从账本摘要生成面向用户的入库提示（不含采集原文） */
 function runIngestHint(rec: TaskCenterRunRecordDto): string | null {
   const s = rec.summary;
@@ -241,6 +250,7 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [retryStashBusy, setRetryStashBusy] = useState(false);
   /** 试跑等账本仅含 rule_id：用本机已同步规则列表解析展示名 */
   const [localRuleNames, setLocalRuleNames] = useState<Map<string, string>>(() => new Map());
 
@@ -678,6 +688,44 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
       });
   }, [selectedTaskId, setStatus]);
 
+  const onRetryTrialIngestFromStash = useCallback(() => {
+    const rec = selectedRun;
+    if (!rec || rec.kind !== "trial" || rec.ok || !hasTrialIngestStashFlag(rec)) {
+      return;
+    }
+    const zh = window.zhizhu;
+    if (!zh?.retryTrialIngestFromStash) {
+      setStatus("当前客户端版本不支持从任务中心重试入库，请更新后重试。", "error");
+      return;
+    }
+    setRetryStashBusy(true);
+    void withTimeout(zh.retryTrialIngestFromStash({ stashId: rec.run_id }), 120_000, "retry-trial-ingest-from-stash")
+      .then((r) => {
+        if (!panelAliveRef.current) {
+          return;
+        }
+        if (r.ok) {
+          setStatus(
+            `重试入库成功：写入 ${r.written}，跳过 ${r.skipped}${r.target ? `，目标 ${r.target}` : ""}。`,
+            "info",
+          );
+          void refreshRuns();
+        } else {
+          setStatus(`重试入库失败：${r.error}`, "error");
+        }
+      })
+      .catch((e) => {
+        if (panelAliveRef.current) {
+          setStatus(e instanceof Error ? e.message : String(e), "error");
+        }
+      })
+      .finally(() => {
+        if (panelAliveRef.current) {
+          setRetryStashBusy(false);
+        }
+      });
+  }, [selectedRun, setStatus, refreshRuns]);
+
   const openRuleFromTask = useCallback(
     (row: Record<string, unknown>) => {
       const rid = pickTaskRuleId(row);
@@ -1014,6 +1062,22 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
               const ingestHintText = runIngestHint(selectedRun);
               return ingestHintText ? <Banner kind="info">{ingestHintText}</Banner> : null;
             })()}
+            {selectedRun.kind === "trial" && !selectedRun.ok && hasTrialIngestStashFlag(selectedRun) ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  type="button"
+                  disabled={retryStashBusy}
+                  onClick={onRetryTrialIngestFromStash}
+                >
+                  {retryStashBusy ? "重试入库中…" : "重试入库"}
+                </Button>
+                <span className="zz-meta-line text-[11px]">
+                  使用本机保存的入库行再次请求控制台（不重新采集）。成功后本条侧车会清理。
+                </span>
+              </div>
+            ) : null}
             <Banner kind="info">
               采集到的具体字段（标题、链接等）不在此文件保存。若任务已成功入库，请到 Web
               控制台「视频」「线索」等模块按时间或规则筛选查看。

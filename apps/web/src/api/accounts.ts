@@ -108,3 +108,45 @@ export async function deleteBizAccount(tenantId: string, platform: string, accou
     `/api/v1/tenants/${encodeURIComponent(tenantId)}/accounts/${encodeURIComponent(platform)}/${encodeURIComponent(accountId)}`,
   );
 }
+
+/** 与控制台删除账号弹窗一致：线索 / 视频 / 任务 / 投放 */
+export type BizAccountAssociationCounts = {
+  leads: number;
+  videos: number;
+  tasks: number;
+  placements: number;
+};
+
+export async function fetchBizAccountAssociationCounts(
+  tenantId: string,
+  platform: string,
+  accountId: string,
+): Promise<BizAccountAssociationCounts> {
+  const base = getApiBaseUrl();
+  if (!base) {
+    throw new Error("未配置 VITE_API_BASE_URL");
+  }
+  const r = await apiGetJson<{ ok?: boolean; association_counts: BizAccountAssociationCounts }>(
+    `/api/v1/tenants/${encodeURIComponent(tenantId)}/accounts/${encodeURIComponent(platform)}/${encodeURIComponent(accountId)}/association-counts`,
+  );
+  return r.association_counts;
+}
+
+export async function deleteBizAccountWithConfirm(
+  tenantId: string,
+  platform: string,
+  accountId: string,
+  body: { password: string; confirm_detach: boolean },
+): Promise<{ ok: boolean; association_counts: BizAccountAssociationCounts }> {
+  const base = getApiBaseUrl();
+  if (!base) {
+    throw new Error("未配置 VITE_API_BASE_URL");
+  }
+  return apiPostJson<{ ok: boolean; association_counts: BizAccountAssociationCounts }>(
+    `/api/v1/tenants/${encodeURIComponent(tenantId)}/accounts/${encodeURIComponent(platform)}/${encodeURIComponent(accountId)}/delete-with-confirm`,
+    {
+      password: body.password,
+      confirm_detach: body.confirm_detach,
+    },
+  );
+}

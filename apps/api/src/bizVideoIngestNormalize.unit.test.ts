@@ -3,6 +3,10 @@ import { test } from "node:test";
 
 import { mergeDyHomepageUrlIntoParams } from "../../client/src/bizVideoDyHomepageMerge.js";
 import {
+  canonicalizeDouyinUserHomepageUrlSync,
+  extractDouyinUserSecUidFromCanonicalHomepageUrl,
+} from "../../client/src/douyinUserHomepageCanonical.js";
+import {
   capturesHaveBizVideoNetworkingPayload,
   tryBuildBizVideoIngestRowsFromSummaryCaptures,
 } from "../../client/src/bizVideoIngestFromCaptures.js";
@@ -11,6 +15,60 @@ import {
   canonicalDouyinVideoUrl,
   sanitizeDyTitle,
 } from "../../client/src/employeePersonalAuthFileIngest.js";
+
+test("extractDouyinUserSecUidFromCanonicalHomepageUrl: 主站 /user 段", () => {
+  assert.equal(
+    extractDouyinUserSecUidFromCanonicalHomepageUrl(
+      "https://www.douyin.com/user/MS4wLjABAAAAeMEM",
+    ),
+    "MS4wLjABAAAAeMEM",
+  );
+});
+
+test("canonicalizeDouyinUserHomepageUrlSync: iesdouyin share/user 与 www 主站个人主页对齐", () => {
+  assert.equal(
+    canonicalizeDouyinUserHomepageUrlSync(
+      "https://www.iesdouyin.com/share/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs?u_code=x",
+    ),
+    "https://www.douyin.com/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs",
+  );
+  assert.equal(
+    canonicalizeDouyinUserHomepageUrlSync(
+      "https://www.douyin.com/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs/?tab=post",
+    ),
+    "https://www.douyin.com/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs",
+  );
+  assert.equal(
+    canonicalizeDouyinUserHomepageUrlSync(
+      "https://m.douyin.com/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs",
+    ),
+    "https://www.douyin.com/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs",
+  );
+});
+
+test("mergeDyHomepageUrlIntoParams: 档案为 iesdouyin 分享链时合并为 www 主站主页", () => {
+  const r = mergeDyHomepageUrlIntoParams(
+    { limit_n: 5 },
+    "acc-1",
+    [
+      {
+        account_id: "acc-1",
+        dy_user_url:
+          "https://www.iesdouyin.com/share/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs",
+        dy_unique_id: "demo_unique",
+      },
+    ],
+    false,
+  );
+  assert.ok(r.ok);
+  if (!r.ok) {
+    return;
+  }
+  assert.equal(
+    r.params.dy_homepage_url,
+    "https://www.douyin.com/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs",
+  );
+});
 
 test("mergeDyHomepageUrlIntoParams: 短号 dy_unique_id 同时补 target_author_uid（数字 account_id）", () => {
   const r = mergeDyHomepageUrlIntoParams(
@@ -33,7 +91,7 @@ test("mergeDyHomepageUrlIntoParams: 短号 dy_unique_id 同时补 target_author_
   assert.equal(r.params.target_author_uid, "7599089618035147825");
 });
 
-test("mergeDyHomepageUrlIntoParams: 档案仅有主页且无 dy_unique_id 时清空任务残留的 target_dy_unique_id", () => {
+test("mergeDyHomepageUrlIntoParams: 档案仅有主页且无 dy_unique_id 时清空陈旧 target_* 并由主页 URL 补 sec_uid", () => {
   const r = mergeDyHomepageUrlIntoParams(
     {
       limit_n: 5,
@@ -54,7 +112,7 @@ test("mergeDyHomepageUrlIntoParams: 档案仅有主页且无 dy_unique_id 时清
     return;
   }
   assert.equal(r.params.dy_homepage_url, "https://www.douyin.com/user/MS4wLjABAAAA_real_home");
-  assert.equal(r.params.target_dy_unique_id, undefined);
+  assert.equal(r.params.target_dy_unique_id, "ms4wljabaaaa_real_home");
   assert.equal(r.params.target_author_uid, undefined);
 });
 
@@ -247,7 +305,11 @@ test("tryBuildBizVideoIngestRowsFromSummaryCaptures: params.dy_homepage_url 存�
         aweme_id: "7634523613215947130",
         desc: "测 #话题",
         share_url: "https://www.iesdouyin.com/share/video/7634523613215947130/?x=1",
-        author: { uid: "7599089618035147825", unique_id: "39539258450" },
+        author: {
+          uid: "7599089618035147825",
+          unique_id: "39539258450",
+          sec_uid: "MS4wLjABAAAAexample",
+        },
         statistics: { play_count: 10 },
         video: {
           duration: 5000,
@@ -262,6 +324,7 @@ test("tryBuildBizVideoIngestRowsFromSummaryCaptures: params.dy_homepage_url 存�
     "sync_test",
     {
       limit_n: 5,
+      /** 与 author.sec_uid 对齐：入库前会从主页 URL 补 target_dy_unique_id（小写 sec_uid） */
       dy_homepage_url: "https://www.douyin.com/user/MS4wLjABAAAAexample",
     },
     "biz-account-uuid-1",
@@ -272,6 +335,112 @@ test("tryBuildBizVideoIngestRowsFromSummaryCaptures: params.dy_homepage_url 存�
   assert.equal(att.merge_blocked_reason_zh, undefined);
   assert.equal(att.rows.length, 1);
   assert.equal(att.rows[0]?.dy_video_url, "https://www.douyin.com/video/7634523613215947130");
+});
+
+test("tryBuildBizVideoIngestRowsFromSummaryCaptures: 全账号 + 扁 captures + 仅单锚点时仍合并主页并推导行", () => {
+  const captures: Record<string, unknown> = {
+    dy_video_detail_payload: [
+      {
+        aweme_id: "7634523613215947130",
+        desc: "扁平桶单账号",
+        author: { uid: "7599089618035147825", unique_id: "39539258450" },
+        statistics: { play_count: 1 },
+        video: {
+          duration: 5000,
+          cover: { url_list: ["https://example.com/cover.jpg"] },
+        },
+      },
+    ],
+  };
+  const att = tryBuildBizVideoIngestRowsFromSummaryCaptures(
+    captures,
+    "sync_test",
+    { limit_n: 5, mode: "enterprise_all_accounts" },
+    "7599089618035147825",
+    "enterprise_all_accounts",
+    [
+      {
+        account_id: "7599089618035147825",
+        dy_user_url: "https://www.douyin.com/user/MS4wLjABAAAAx",
+        dy_unique_id: "39539258450",
+      },
+    ],
+    ["7599089618035147825"],
+  );
+  assert.equal(att.merge_blocked_reason_zh, undefined);
+  assert.equal(att.rows.length, 1);
+  assert.equal(att.rows[0]?.account_id, "7599089618035147825");
+});
+
+test("tryBuildBizVideoIngestRowsFromSummaryCaptures: 企业分桶 + 部分户缺主页时仍推导其余户并附 merge 提示", () => {
+  const goodAid = "aaa-111-uuid";
+  const badAid = "bbb-222-uuid";
+  const captures: Record<string, unknown> = {
+    [goodAid]: {
+      dy_video_detail_payload: [
+        {
+          aweme_id: "7634523613215947130",
+          desc: "ok-bucket",
+          author: { uid: "7599089618035147825", unique_id: "39539258450" },
+          statistics: { play_count: 1 },
+          video: {
+            duration: 5000,
+            cover: { url_list: ["https://example.com/c.jpg"] },
+          },
+        },
+      ],
+    },
+    [badAid]: {
+      dy_video_detail_payload: [
+        {
+          aweme_id: "7634523613215947131",
+          desc: "bad-bucket",
+          author: { uid: "7599089618035147825", unique_id: "39539258450" },
+          statistics: { play_count: 1 },
+          video: {
+            duration: 5000,
+            cover: { url_list: ["https://example.com/d.jpg"] },
+          },
+        },
+      ],
+    },
+  };
+  const att = tryBuildBizVideoIngestRowsFromSummaryCaptures(
+    captures,
+    "sync_test",
+    { limit_n: 5, mode: "enterprise_all_accounts" },
+    "",
+    "enterprise_all_accounts",
+    [
+      {
+        account_id: goodAid,
+        dy_user_url: "https://www.douyin.com/user/MS4wLjABAAAAgood",
+        dy_unique_id: "39539258450",
+      },
+      { account_id: badAid, dy_unique_id: "other" },
+    ],
+    [goodAid, badAid],
+  );
+  assert.equal(att.rows.length, 1);
+  assert.equal(att.rows[0]?.account_id, goodAid);
+  assert.ok(att.merge_blocked_reason_zh != null && att.merge_blocked_reason_zh.includes(badAid));
+});
+
+test("tryBuildBizVideoIngestRowsFromSummaryCaptures: 全账号 + 扁 captures + 多锚点时显式拒绝以免缺 account_id", () => {
+  const captures: Record<string, unknown> = {
+    dy_latest_video_payload: [{ link_data: [] }],
+  };
+  const att = tryBuildBizVideoIngestRowsFromSummaryCaptures(
+    captures,
+    "sync_test",
+    { mode: "enterprise_all_accounts", limit_n: 5 },
+    "7599089618035147825",
+    "enterprise_all_accounts",
+    [],
+    ["7599089618035147825", "7599089618035147826"],
+  );
+  assert.equal(att.rows.length, 0);
+  assert.ok(typeof att.merge_blocked_reason_zh === "string" && att.merge_blocked_reason_zh.includes("单桶扁平"));
 });
 
 test("buildBizVideoRowsFromCaptures: 丢弃「创作的原声」类非短视频", () => {
@@ -462,6 +631,181 @@ test("buildBizVideoRowsFromCaptures: recent_72h 仅保留发布时间在窗口�
   });
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.dy_video_id, "7634523613215948002");
+});
+
+test("buildBizVideoRowsFromCaptures: 抖音锚点开启时 aweme 缺 author 不入库（即使有主页 URL）", () => {
+  const captures: Record<string, unknown> = {
+    dy_video_detail_payload: [
+      {
+        aweme_id: "7634523613215999991",
+        desc: "列表瘦身无 author",
+        statistics: { play_count: 2 },
+        video: { duration: 3000, cover: { url_list: ["https://example.com/c.jpg"] } },
+      },
+    ],
+  };
+  const rows = buildBizVideoRowsFromCaptures(captures, {
+    params: {
+      account_id: "biz-1",
+      target_dy_unique_id: "somehandle",
+      dy_homepage_url: "https://www.douyin.com/user/MS4wLjABAAAAx",
+      limit_n: 5,
+    },
+  });
+  assert.equal(rows.length, 0);
+});
+
+test("buildBizVideoRowsFromCaptures: 无 dy_homepage_url 时 aweme 缺 author 且 target 已设则不入库", () => {
+  const captures: Record<string, unknown> = {
+    dy_video_detail_payload: [
+      {
+        aweme_id: "7634523613215999992",
+        desc: "列表瘦身无 author",
+        statistics: { play_count: 2 },
+        video: { duration: 3000, cover: { url_list: ["https://example.com/c.jpg"] } },
+      },
+    ],
+  };
+  const rows = buildBizVideoRowsFromCaptures(captures, {
+    params: {
+      account_id: "biz-1",
+      target_dy_unique_id: "39539258450",
+      limit_n: 5,
+    },
+  });
+  assert.equal(rows.length, 0);
+});
+
+test("buildBizVideoRowsFromCaptures: 部分 id 已有详情时仅 SEO 的 id 锚点下丢弃（防推荐内链）", () => {
+  const captures: Record<string, unknown> = {
+    dy_video_detail_payload: [
+      {
+        aweme_id: "7634523613216000001",
+        desc: "详情作品",
+        author: { uid: "7599089618035147825", unique_id: "39539258450" },
+        statistics: { play_count: 1 },
+        video: { duration: 5000, cover: { url_list: ["https://example.com/a.jpg"] } },
+      },
+    ],
+    dy_latest_video_payload: [
+      {
+        link_data: [
+          {
+            link_type: 760,
+            link_list: [
+              {
+                url: "https://www.douyin.com/video/7634523613216000999",
+                anchor: "仅 SEO 链",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const rows = buildBizVideoRowsFromCaptures(captures, {
+    params: {
+      account_id: "7599089618035147825",
+      target_dy_unique_id: "39539258450",
+      dy_homepage_url: "https://www.douyin.com/user/MS4wLjABAAAAz",
+      limit_n: 20,
+    },
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(String(rows[0]?.dy_video_id), "7634523613216000001");
+});
+
+test("buildBizVideoRowsFromCaptures: 仅有 SEO 且 detail 全空时抖音锚点下不入库", () => {
+  const captures: Record<string, unknown> = {
+    dy_latest_video_payload: [
+      {
+        link_data: [
+          {
+            link_type: 760,
+            link_list: [
+              {
+                url: "https://www.douyin.com/video/7634523613215888888",
+                anchor: "作品标题",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const rows = buildBizVideoRowsFromCaptures(captures, {
+    params: {
+      account_id: "biz-1",
+      target_dy_unique_id: "myhandle",
+      dy_homepage_url: "https://www.douyin.com/user/MS4wLjABAAAAz",
+      limit_n: 5,
+    },
+  });
+  assert.equal(rows.length, 0);
+});
+
+test("buildBizVideoRowsFromCaptures: 列表仅 digg_count、无 play_count/封面/时长仍可入库（点赞算最低媒体信号）", () => {
+  const captures: Record<string, unknown> = {
+    dy_video_detail_payload: [
+      {
+        aweme_id: "7634523613215947199",
+        desc: "仅有互动量瘦身列表",
+        author: { uid: "7599089618035147825", unique_id: "39539258450" },
+        statistics: { digg_count: 42 },
+      },
+    ],
+  };
+  const rows = buildBizVideoRowsFromCaptures(captures, {
+    params: { account_id: "biz-uuid-1", limit_n: 5 },
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.dy_like_count, 42);
+});
+
+test("buildBizVideoRowsFromCaptures: stats 与 statistics 合并且同名键以后者为准", () => {
+  const captures: Record<string, unknown> = {
+    dy_video_detail_payload: [
+      {
+        aweme_id: "7634523613215947198",
+        desc: "合并统计块",
+        author: { uid: "7599089618035147825", unique_id: "39539258450" },
+        stats: { play_count: 1, digg_count: 2 },
+        statistics: { play_count: 99 },
+      },
+    ],
+  };
+  const rows = buildBizVideoRowsFromCaptures(captures, {
+    params: { account_id: "7599089618035147825", limit_n: 5 },
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.dy_play_count, 99);
+  assert.equal(rows[0]?.dy_like_count, 2);
+});
+
+test("buildBizVideoRowsFromCaptures: createTime ISO 字符串可解析发布时间（recent_72h）", () => {
+  const anchorIso = "2026-05-02T12:00:00.000Z";
+  const captures: Record<string, unknown> = {
+    dy_video_detail_payload: [
+      {
+        aweme_id: "7634523613215947197",
+        desc: "ISO 时间字段",
+        createTime: "2026-05-01T10:00:00.000Z",
+        author: { uid: "7599089618035147825", unique_id: "39539258450" },
+        statistics: { play_count: 1 },
+        video: { duration: 5000, cover: { url_list: ["https://example.com/x.jpg"] } },
+      },
+    ],
+  };
+  const rows = buildBizVideoRowsFromCaptures(captures, {
+    params: {
+      account_id: "7599089618035147825",
+      limit_n: 100,
+      biz_video_list_mode: "recent_72h",
+      biz_video_recent_hours: 72,
+      biz_video_collect_anchor_iso: anchorIso,
+    },
+  });
+  assert.equal(rows.length, 1);
 });
 
 test("buildBizVideoRowsFromCaptures: full 模式不过滤发布时间", () => {

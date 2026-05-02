@@ -10,9 +10,22 @@ import type { App } from "electron";
 import type { RuleBody } from "@zhizhu/playwright-rule-schema";
 import { validateRuleBody } from "@zhizhu/playwright-rule-schema";
 import { enrichBizVideoParamsWithDyHomepage } from "./bizVideoDyHomepageParams";
-import { applyRuleBodyDefaultParamsToRuntimeParams } from "./ruleDefaultParamsMerge";
-import { bizVideoCaptureParamsForIngest } from "./bizVideoIngestParams";
 import {
+  resolveBizVideoRunnerAccountsUserUrls,
+  resolveBizVideoTaskParamsHomepageUrls,
+} from "./douyinUserHomepageCanonical";
+import { mergeDyHomepageUrlIntoParams } from "./bizVideoDyHomepageMerge";
+import { applyRuleBodyDefaultParamsToRuntimeParams } from "./ruleDefaultParamsMerge";
+import {
+  bizVideoCaptureParamsForIngest,
+  normalizeBizVideoParamAccountId,
+  normalizeBizVideoParamAccountIds,
+  resolveBizVideoProfileScrollCaptureWait,
+  resolveBizVideoProfileScrollLimitPages,
+} from "./bizVideoIngestParams";
+import { resolveTaskRuleHardTimeoutMs } from "./taskRuleHardTimeout";
+import {
+  bizVideoRowDedupeKey,
   capturesHaveBizVideoNetworkingPayload,
   tryBuildBizVideoIngestRowsFromSummaryCaptures,
 } from "./bizVideoIngestFromCaptures";
@@ -23,6 +36,7 @@ import {
   nodeExecutableForRunner,
   resolveRunnerCliJs,
 } from "./runnerProcess";
+import { augmentRunnerErrorMessageForDisplay } from "./runnerFailureHints";
 import { buildBizVideoCoverageForAggregate } from "./bizVideoCaptureCoverage";
 import type {
   AutomationRuleTrialRunResultDto,
@@ -35,6 +49,7 @@ import {
   discoverRuleBundleDirByMappingTarget,
   fetchPublishedAutomationRuleLogicalId,
   loadFileRuleBundleLiteFromDir,
+  cloneFileRuleIngestRowsSnapshot,
   postEmployeePersonalAuthFileRuleIngest,
   readTenantDeviceApiContext,
   resolveIngestMappingByTarget,
@@ -49,8 +64,6 @@ import {
   clearTrialRunPrepareCancel,
   isTrialRunPrepareCancelRequested,
 } from "./trialRunPrepareCancel";
-
-const TRIAL_HARD_TIMEOUT_MS = 5 * 60_000;
 
 export interface TrialRunArgs {
   ruleId: string;
@@ -176,12 +189,8 @@ export async function trialRunAutomationRule(
     inferredIngestTarget,
   );
   if (inferredIngestTarget === "biz_video") {
-    const anchor =
-      typeof trialParams.account_id === "string" && trialParams.account_id.trim().length > 0
-        ? trialParams.account_id.trim()
-        : Array.isArray(trialParams.account_ids) && trialParams.account_ids.length > 0
-          ? String(trialParams.account_ids[0]).trim()
-          : "";
+    trialParams = await resolveBizVideoTaskParamsHomepageUrls(trialParams);
+    const anchor = bizVideoTrialAnchorFromParams(trialParams);
     if (anchor.length > 0) {
       try {
         const ctxTrial = readTenantDeviceApiContext(app);
@@ -203,7 +212,7 @@ export async function trialRunAutomationRule(
       }
     }
     const listModeRaw = typeof trialParams.biz_video_list_mode === "string" ? trialParams.biz_video_list_mode.trim() : "";
-    const listMode = listModeRaw === "full" ? "full" : "recent_72h";
+    const listMode = listModeRaw === "recent_72h" ? "recent_72h" : "full";
     const recentHoursRaw =
       typeof trialParams.biz_video_recent_hours === "number"
         ? trialParams.biz_video_recent_hours
@@ -219,7 +228,8 @@ export async function trialRunAutomationRule(
       biz_video_list_mode: listMode,
       biz_video_recent_hours: recentHours,
       biz_video_collect_anchor_iso: new Date().toISOString(),
-      profile_scroll_limit_pages: listMode === "full" ? 500 : 80,
+      profile_scroll_limit_pages: resolveBizVideoProfileScrollLimitPages(trialParams, listMode),
+      profile_scroll_capture_wait: resolveBizVideoProfileScrollCaptureWait(trialParams, listMode),
     };
   }
   {
@@ -227,17 +237,43 @@ export async function trialRunAutomationRule(
     if (prep) return prep;
   }
 
+  const trialModeEarly =
+    typeof trialParams.mode === "string" ? trialParams.mode.trim() : "";
+  const trialAccountRunListEarly = bizVideoTrialAccountRunList(trialParams, trialModeEarly);
+  const useEnterpriseBizVideoMultiRun =
+    inferredIngestTarget === "biz_video" &&
+    trialModeEarly === "enterprise_all_accounts" &&
+    trialAccountRunListEarly.length > 0;
+
+  /** 与 `runnerLoop` 一致：`account_ids` 多项时必须显式 `enterprise_all_accounts`，否则试跑曾静默只跑首个锚点。 */
+  if (inferredIngestTarget === "biz_video") {
+    const distinctAcct = new Set(normalizeBizVideoParamAccountIds(trialParams.account_ids));
+    if (distinctAcct.size > 1 && trialModeEarly !== "enterprise_all_accounts") {
+      return {
+        ok: false as const,
+        error:
+          "biz_video：params.account_ids 含多个业务账号时，必须设置 mode 为 enterprise_all_accounts（与队列任务一致）。未设置时只会按单账号逻辑处理首个账号。",
+      };
+    }
+  }
+
+  if (
+    inferredIngestTarget === "biz_video" &&
+    trialModeEarly === "enterprise_all_accounts" &&
+    trialAccountRunListEarly.length === 0
+  ) {
+    return {
+      ok: false as const,
+      error:
+        "biz_video：全账号模式须至少有一个业务账号（请填 params.account_ids，或提供一个 params.account_id）。",
+    };
+  }
+
   const log = onLogLine ?? ((): void => {});
   let effectiveProfile = profile;
   if (inferredIngestTarget === "biz_video") {
-    const modeTr = typeof trialParams.mode === "string" ? trialParams.mode.trim() : "";
-    const anchorTr =
-      typeof trialParams.account_id === "string" && trialParams.account_id.trim().length > 0
-        ? trialParams.account_id.trim()
-        : Array.isArray(trialParams.account_ids) && trialParams.account_ids.length > 0
-          ? String(trialParams.account_ids[0]).trim()
-          : "";
-    if (anchorTr.length > 0 && modeTr !== "enterprise_all_accounts") {
+    const anchorTr = bizVideoTrialAnchorFromParams(trialParams);
+    if (anchorTr.length > 0 && trialModeEarly !== "enterprise_all_accounts") {
       const ctxB = readTenantDeviceApiContext(app);
       if (ctxB) {
         const bindR = await tenantDeviceHttpJson<Record<string, unknown>[]>(
@@ -248,7 +284,7 @@ export async function trialRunAutomationRule(
         if (bindR.ok && Array.isArray(bindR.data)) {
           const needle = anchorTr.toLowerCase();
           const row = bindR.data.find(
-            (it) => typeof it.account_id === "string" && it.account_id.trim().toLowerCase() === needle,
+            (it) => normalizeBizVideoParamAccountId(it.account_id).toLowerCase() === needle,
           );
           const boundSlug =
             row && typeof row.browser_profile_slug === "string" ? row.browser_profile_slug.trim() : "";
@@ -276,83 +312,296 @@ export async function trialRunAutomationRule(
     if (prep) return prep;
   }
 
-  const userDataDir = profilePersistentDir(app, effectiveProfile.slug);
-  fs.mkdirSync(userDataDir, { recursive: true });
-  {
-    const prep = consumeTrialPrepareCancelIfRequested(runId);
-    if (prep) return prep;
-  }
+  /** 与 runnerLoop 一致：`enterprise_all_accounts` + `biz_video` 须分账户 spawn，captures 按户分桶，否则扁平 captures 推导出缺 `account_id`。 */
+  let trialOpsAccountsPrefetched: Record<string, unknown>[] | null = null;
+  let s: TaskRunSummary;
 
-  const env = { ...process.env } as NodeJS.ProcessEnv;
-  env.ZHIZHU_RUNNER_CMD = "task-rule";
-  env.ZHIZHU_HEADED_PROFILE_USER_DATA_DIR = userDataDir;
-  env.ZHIZHU_PW_FINGERPRINT_SEED = `${effectiveProfile.id}:${effectiveProfile.slug}`;
-  env.ZHIZHU_RUNNER_RUN_ID = runId;
-  env.ZHIZHU_RULE_TRACE_DIR = path.join(app.getPath("userData"), "rule-trace");
-  applyPlaywrightBrowsersPath(env);
-
-  let child: ChildProcess;
-  try {
-    child = spawn(nodeExecutableForRunner(), [cliJs], {
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    trialTaskRuleChild = child;
-  } catch (e) {
-    const prep = consumeTrialPrepareCancelIfRequested(runId);
-    if (prep) return prep;
-    return { ok: false as const, error: `spawn 失败：${e instanceof Error ? e.message : String(e)}` };
-  }
-  try {
-    await closeStdinWithTaskRuleJsonPayload(child.stdin, {
-      rule_body: body,
-      ...(fileRuleDir ? { file_rule_dir: fileRuleDir } : {}),
-      ...(cachedPublishedBundle && Object.keys(cachedPublishedBundle.meta).length > 0
-        ? { file_rule_meta: cachedPublishedBundle.meta }
-        : {}),
-      ...(cachedPublishedBundle && Object.keys(cachedPublishedBundle.mapping).length > 0
-        ? { file_rule_mapping: cachedPublishedBundle.mapping }
-        : {}),
-      params: trialParams,
-      capture_trace: captureTrace,
-      headed,
-      console_base: consoleBase,
-    });
-  } catch (e) {
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      /* noop */
+  if (useEnterpriseBizVideoMultiRun) {
+    const ctxMulti = readTenantDeviceApiContext(app);
+    if (!ctxMulti) {
+      clearTrialRunPrepareCancel();
+      return {
+        ok: false as const,
+        error:
+          "全账号试跑须已绑定设备以拉取员工档案与主页 merge；当前未读到租户/设备 API 上下文。",
+      };
     }
-    trialTaskRuleChild = undefined;
-    const prep = consumeTrialPrepareCancelIfRequested(runId, child);
-    if (prep) return prep;
-    return { ok: false as const, error: `stdin 写入失败：${e instanceof Error ? e.message : String(e)}` };
-  }
-  /**
-   * stdin 写入期间子进程尚未 register，cancel 杀不到；若用户在此期间已置位中止，则勿再进入 wait。
-   */
-  {
-    const prep = consumeTrialPrepareCancelIfRequested(runId, child);
-    if (prep) {
+    const eidForAcc =
+      typeof trialParams.dy_leads_enterprise_id === "string" ? trialParams.dy_leads_enterprise_id.trim() : "";
+    const accSuffix =
+      eidForAcc.length > 0
+        ? `/runner/accounts?dy_leads_enterprise_id=${encodeURIComponent(eidForAcc)}&active_ops_only=0`
+        : "/runner/accounts?active_ops_only=0";
+    const accListR = await tenantDeviceHttpJson<Record<string, unknown>[]>(ctxMulti, "GET", accSuffix);
+    const loopOpsAccountsRaw = accListR.ok && Array.isArray(accListR.data) ? accListR.data : [];
+    const loopOpsAccounts = await resolveBizVideoRunnerAccountsUserUrls(loopOpsAccountsRaw);
+    trialOpsAccountsPrefetched = loopOpsAccounts;
+
+    const bindR = await tenantDeviceHttpJson<Record<string, unknown>[]>(
+      ctxMulti,
+      "GET",
+      "/runner/device-browser-accounts",
+    );
+    const deviceBrowserAccountRows = bindR.ok && Array.isArray(bindR.data) ? bindR.data : [];
+
+    const aggregateCaptures: Record<string, unknown> = {};
+    const aggregateRows: Record<string, unknown>[] = [];
+    const runSummaries: TaskRunSummary[] = [];
+    const runFailures: Array<{ account_id: string; error_code?: string; error_message?: string }> = [];
+    const combinedStepDurations: unknown[] = [];
+
+    for (let i = 0; i < trialAccountRunListEarly.length; i++) {
+      {
+        const prep = consumeTrialPrepareCancelIfRequested(runId);
+        if (prep) return prep;
+      }
+      const accountIdForRun = trialAccountRunListEarly[i]!;
+      log(
+        `[trial] 全账号试跑 ${i + 1}/${trialAccountRunListEarly.length} account_id=${accountIdForRun}`,
+      );
+      let paramsForRun: Record<string, unknown> = {
+        ...trialParams,
+        account_id: accountIdForRun,
+        target_account_id: accountIdForRun,
+      };
+      delete paramsForRun.dy_homepage_url;
+      delete paramsForRun.target_dy_unique_id;
+      delete paramsForRun.target_author_uid;
+
+      const mergedHome = mergeDyHomepageUrlIntoParams(paramsForRun, accountIdForRun, loopOpsAccounts, false);
+      if (!mergedHome.ok) {
+        runFailures.push({
+          account_id: accountIdForRun,
+          error_code: "VALIDATION_FAILED",
+          error_message: mergedHome.message,
+        });
+        runSummaries.push({
+          ok: false,
+          rows: [],
+          captures: {},
+          error_code: "VALIDATION_FAILED",
+          error_message: mergedHome.message,
+        });
+        continue;
+      }
+      paramsForRun = mergedHome.params;
+
+      let profileForLoop = profile;
+      const fromBinding = profileFromDeviceBindingForTrial(app, deviceBrowserAccountRows, accountIdForRun);
+      if (fromBinding) {
+        profileForLoop = fromBinding;
+      }
+
+      const userDataDirLoop = profilePersistentDir(app, profileForLoop.slug);
+      fs.mkdirSync(userDataDirLoop, { recursive: true });
+      const subRunId = `${runId}_${i + 1}`;
+      const envLoop = { ...process.env } as NodeJS.ProcessEnv;
+      envLoop.ZHIZHU_RUNNER_CMD = "task-rule";
+      envLoop.ZHIZHU_HEADED_PROFILE_USER_DATA_DIR = userDataDirLoop;
+      envLoop.ZHIZHU_PW_FINGERPRINT_SEED = `${profileForLoop.id}:${profileForLoop.slug}`;
+      envLoop.ZHIZHU_RUNNER_RUN_ID = subRunId;
+      envLoop.ZHIZHU_RULE_TRACE_DIR = path.join(app.getPath("userData"), "rule-trace");
+      applyPlaywrightBrowsersPath(envLoop);
+
+      let childLoop: ChildProcess;
+      try {
+        childLoop = spawn(nodeExecutableForRunner(), [cliJs], {
+          env: envLoop,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+        trialTaskRuleChild = childLoop;
+      } catch (e) {
+        trialTaskRuleChild = undefined;
+        const msg = e instanceof Error ? e.message : String(e);
+        runFailures.push({ account_id: accountIdForRun, error_code: "INTERNAL_ERROR", error_message: msg });
+        runSummaries.push({
+          ok: false,
+          rows: [],
+          captures: {},
+          error_code: "INTERNAL_ERROR",
+          error_message: msg,
+        });
+        continue;
+      }
+      try {
+        await closeStdinWithTaskRuleJsonPayload(childLoop.stdin, {
+          rule_body: body,
+          ...(fileRuleDir ? { file_rule_dir: fileRuleDir } : {}),
+          ...(cachedPublishedBundle && Object.keys(cachedPublishedBundle.meta).length > 0
+            ? { file_rule_meta: cachedPublishedBundle.meta }
+            : {}),
+          ...(cachedPublishedBundle && Object.keys(cachedPublishedBundle.mapping).length > 0
+            ? { file_rule_mapping: cachedPublishedBundle.mapping }
+            : {}),
+          params: paramsForRun,
+          capture_trace: captureTrace,
+          headed,
+          console_base: consoleBase,
+        });
+      } catch (e) {
+        try {
+          childLoop.kill("SIGTERM");
+        } catch {
+          /* noop */
+        }
+        trialTaskRuleChild = undefined;
+        const prep = consumeTrialPrepareCancelIfRequested(runId, childLoop);
+        if (prep) return prep;
+        const msg = e instanceof Error ? e.message : String(e);
+        runFailures.push({ account_id: accountIdForRun, error_code: "INTERNAL_ERROR", error_message: msg });
+        runSummaries.push({
+          ok: false,
+          rows: [],
+          captures: {},
+          error_code: "INTERNAL_ERROR",
+          error_message: msg,
+        });
+        continue;
+      }
+      {
+        const prep = consumeTrialPrepareCancelIfRequested(runId, childLoop);
+        if (prep) {
+          trialTaskRuleChild = undefined;
+          return prep;
+        }
+      }
+
+      const userAbortRefLoop = { aborted: false };
+      registerTaskRuleChild(childLoop, userAbortRefLoop, "trial");
+      const one = await waitForRunnerTaskRuleChildClose(childLoop, {
+        hardTimeoutMs: resolveTaskRuleHardTimeoutMs({
+          inferredIngestTarget,
+          params: paramsForRun,
+          ruleBody: body,
+        }),
+        onLogLine: log,
+        userAbortRef: userAbortRefLoop,
+      });
       trialTaskRuleChild = undefined;
-      return prep;
+      runSummaries.push(one);
+      if (one.ok) {
+        aggregateCaptures[accountIdForRun] = one.captures;
+        for (const r of one.rows) {
+          const aid = normalizeBizVideoParamAccountId(r.account_id);
+          aggregateRows.push(aid.length > 0 ? r : { ...r, account_id: accountIdForRun });
+        }
+        const sd = one.summary?.step_durations;
+        if (Array.isArray(sd)) {
+          combinedStepDurations.push({ account_id: accountIdForRun, step_durations: sd });
+        }
+      } else {
+        runFailures.push({
+          account_id: accountIdForRun,
+          error_code: one.error_code,
+          error_message: one.error_message,
+        });
+      }
     }
+
+    const tracePick = [...runSummaries].reverse().find((x) => x.trace_path)?.trace_path ?? null;
+    s = {
+      ok: runFailures.length === 0 && runSummaries.length > 0 && runSummaries.every((x) => x.ok),
+      rows: aggregateRows,
+      captures: aggregateCaptures,
+      trace_path: tracePick,
+      summary: {
+        account_runs: trialAccountRunListEarly.length,
+        account_failed: runFailures.length,
+        account_failed_detail: runFailures,
+        step_durations: combinedStepDurations,
+      },
+    };
+  } else {
+    const userDataDir = profilePersistentDir(app, effectiveProfile.slug);
+    fs.mkdirSync(userDataDir, { recursive: true });
+    {
+      const prep = consumeTrialPrepareCancelIfRequested(runId);
+      if (prep) return prep;
+    }
+
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    env.ZHIZHU_RUNNER_CMD = "task-rule";
+    env.ZHIZHU_HEADED_PROFILE_USER_DATA_DIR = userDataDir;
+    env.ZHIZHU_PW_FINGERPRINT_SEED = `${effectiveProfile.id}:${effectiveProfile.slug}`;
+    env.ZHIZHU_RUNNER_RUN_ID = runId;
+    env.ZHIZHU_RULE_TRACE_DIR = path.join(app.getPath("userData"), "rule-trace");
+    applyPlaywrightBrowsersPath(env);
+
+    let child: ChildProcess;
+    try {
+      child = spawn(nodeExecutableForRunner(), [cliJs], {
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      trialTaskRuleChild = child;
+    } catch (e) {
+      const prep = consumeTrialPrepareCancelIfRequested(runId);
+      if (prep) return prep;
+      return { ok: false as const, error: `spawn 失败：${e instanceof Error ? e.message : String(e)}` };
+    }
+    try {
+      await closeStdinWithTaskRuleJsonPayload(child.stdin, {
+        rule_body: body,
+        ...(fileRuleDir ? { file_rule_dir: fileRuleDir } : {}),
+        ...(cachedPublishedBundle && Object.keys(cachedPublishedBundle.meta).length > 0
+          ? { file_rule_meta: cachedPublishedBundle.meta }
+          : {}),
+        ...(cachedPublishedBundle && Object.keys(cachedPublishedBundle.mapping).length > 0
+          ? { file_rule_mapping: cachedPublishedBundle.mapping }
+          : {}),
+        params: trialParams,
+        capture_trace: captureTrace,
+        headed,
+        console_base: consoleBase,
+      });
+    } catch (e) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* noop */
+      }
+      trialTaskRuleChild = undefined;
+      const prep = consumeTrialPrepareCancelIfRequested(runId, child);
+      if (prep) return prep;
+      return { ok: false as const, error: `stdin 写入失败：${e instanceof Error ? e.message : String(e)}` };
+    }
+    /**
+     * stdin 写入期间子进程尚未 register，cancel 杀不到；若用户在此期间已置位中止，则勿再进入 wait。
+     */
+    {
+      const prep = consumeTrialPrepareCancelIfRequested(runId, child);
+      if (prep) {
+        trialTaskRuleChild = undefined;
+        return prep;
+      }
+    }
+
+    const userAbortRef = { aborted: false };
+    registerTaskRuleChild(child, userAbortRef, "trial");
+    s = await waitForRunnerTaskRuleChildClose(child, {
+      hardTimeoutMs: resolveTaskRuleHardTimeoutMs({
+        inferredIngestTarget,
+        params: trialParams,
+        ruleBody: body,
+      }),
+      onLogLine: log,
+      userAbortRef,
+    });
+    trialTaskRuleChild = undefined;
   }
 
-  const userAbortRef = { aborted: false };
-  registerTaskRuleChild(child, userAbortRef, "trial");
-  const s = await waitForRunnerTaskRuleChildClose(child, {
-    hardTimeoutMs: TRIAL_HARD_TIMEOUT_MS,
-    onLogLine: log,
-    userAbortRef,
-  });
-  trialTaskRuleChild = undefined;
   if (!s.ok) {
-    /** IPC 会同时置位试跑准备中止；此处未走 consume，避免残留影响后续试跑 */
-    clearTrialRunPrepareCancel();
-    return trialSummaryToDto(s, runId);
+    const partialBizVideoEnterpriseResidual =
+      inferredIngestTarget === "biz_video" &&
+      trialModeEarly === "enterprise_all_accounts" &&
+      (s.rows.length > 0 || Object.keys(s.captures).length > 0);
+    if (!partialBizVideoEnterpriseResidual) {
+      /** IPC 会同时置位试跑准备中止；此处未走 consume，避免残留影响后续试跑 */
+      clearTrialRunPrepareCancel();
+      return trialSummaryToDto(s, runId);
+    }
   }
 
   /** 没有 ingest 目标的规则（如纯导航类 `rule-high-potential`）：跳过入库，直接成功。 */
@@ -421,31 +670,16 @@ export async function trialRunAutomationRule(
 
   const mt =
     typeof resolvedIngest.mapping.target === "string" ? resolvedIngest.mapping.target.trim() : "";
-  const trialAnchorAccountId =
-    typeof trialParams.account_id === "string" && trialParams.account_id.trim().length > 0
-      ? trialParams.account_id.trim()
-      : Array.isArray(trialParams.account_ids) && trialParams.account_ids.length > 0
-        ? String(trialParams.account_ids[0]).trim()
-        : "";
+  const trialAnchorAccountId = bizVideoTrialAnchorFromParams(trialParams);
   const trialMode = typeof trialParams.mode === "string" ? trialParams.mode.trim() : "";
+  const fromExplicitAccountId = normalizeBizVideoParamAccountId(trialParams.account_id);
   const trialDefaultAccountId =
-    typeof trialParams.account_id === "string" && trialParams.account_id.trim().length > 0
-      ? trialParams.account_id.trim()
-      : trialAnchorAccountId;
-  const trialAccountRunList =
-    trialMode === "enterprise_all_accounts"
-      ? Array.from(
-          new Set(
-            (Array.isArray(trialParams.account_ids) ? trialParams.account_ids : [])
-              .map((x) => (typeof x === "string" ? x.trim() : String(x).trim()))
-              .filter((x) => x.length > 0),
-          ),
-        )
-      : Array.from(new Set([trialAnchorAccountId].filter((x) => x.length > 0)));
+    fromExplicitAccountId.length > 0 ? fromExplicitAccountId : trialAnchorAccountId;
+  const trialAccountRunList = bizVideoTrialAccountRunList(trialParams, trialMode);
   const rowDerivationParams =
     mt === "biz_video" ? bizVideoCaptureParamsForIngest(trialParams, trialAnchorAccountId, trialMode) : trialParams;
-  let trialOpsAccounts: Record<string, unknown>[] = [];
-  if (mt === "biz_video") {
+  let trialOpsAccounts: Record<string, unknown>[] = trialOpsAccountsPrefetched ?? [];
+  if (trialOpsAccounts.length === 0 && mt === "biz_video") {
     const eid =
       typeof trialParams.dy_leads_enterprise_id === "string" ? trialParams.dy_leads_enterprise_id.trim() : "";
     const suffix =
@@ -454,15 +688,14 @@ export async function trialRunAutomationRule(
         : "/runner/accounts?active_ops_only=0";
     const accR = await tenantDeviceHttpJson<Record<string, unknown>[]>(ctx, "GET", suffix);
     if (accR.ok && Array.isArray(accR.data)) {
-      trialOpsAccounts = accR.data;
+      trialOpsAccounts = await resolveBizVideoRunnerAccountsUserUrls(accR.data);
     }
   }
   let rowsForIngest: Record<string, unknown>[];
   let bizVideoIngestAttempt: ReturnType<typeof tryBuildBizVideoIngestRowsFromSummaryCaptures> | null =
     null;
-  if (s.rows.length > 0) {
-    rowsForIngest = s.rows as Record<string, unknown>[];
-  } else if (mt === "biz_video") {
+  if (mt === "biz_video") {
+    /** 与队列侧一致：优先从 captures 推导行；Runner 直出 `rows` 再合并去重，避免「有表行无抓包行」时丢数。 */
     bizVideoIngestAttempt = tryBuildBizVideoIngestRowsFromSummaryCaptures(
       s.captures as Record<string, unknown>,
       `trial_${runId}`,
@@ -472,7 +705,30 @@ export async function trialRunAutomationRule(
       trialOpsAccounts,
       trialAccountRunList,
     );
-    rowsForIngest = bizVideoIngestAttempt.rows;
+    rowsForIngest = [...bizVideoIngestAttempt.rows];
+    if (s.rows.length > 0) {
+      const seen = new Set<string>();
+      for (const r of rowsForIngest) {
+        const k = bizVideoRowDedupeKey(r);
+        if (k.length > 0) {
+          seen.add(k);
+        }
+      }
+      for (const r of s.rows as Record<string, unknown>[]) {
+        const k = bizVideoRowDedupeKey(r);
+        if (k.length > 0) {
+          if (!seen.has(k)) {
+            rowsForIngest.push(r);
+            seen.add(k);
+          }
+        } else {
+          rowsForIngest.push(r);
+        }
+      }
+    }
+  } else if (s.rows.length > 0) {
+    /** 勿与 Runner `s.rows` 共引用，避免后续补字段或入库侧改动污染结案内存 */
+    rowsForIngest = [...(s.rows as Record<string, unknown>[])];
   } else {
     rowsForIngest = buildRowsFromCapturesByIngestTarget(mt, s.captures, {
       syncBatchId: `trial_${runId}`,
@@ -483,7 +739,7 @@ export async function trialRunAutomationRule(
     if (trialMode !== "enterprise_all_accounts" && trialAnchorAccountId.length > 0) {
       /** 与 runnerLoop 一致：captures 推导行也可能缺 account_id */
       rowsForIngest = rowsForIngest.map((r) => {
-        const aid = typeof r.account_id === "string" ? r.account_id.trim() : "";
+        const aid = normalizeBizVideoParamAccountId(r.account_id);
         if (aid.length > 0) {
           return r;
         }
@@ -497,35 +753,58 @@ export async function trialRunAutomationRule(
     if (prep) return prep;
   }
 
+  const bizVideoIngestBlockedHint =
+    bizVideoIngestAttempt?.merge_blocked_reason_zh ?? bizVideoIngestAttempt?.row_derivation_debug_zh;
   if (
     mt === "biz_video" &&
     s.ok &&
-    s.rows.length === 0 &&
     rowsForIngest.length === 0 &&
-    bizVideoIngestAttempt?.merge_blocked_reason_zh &&
+    bizVideoIngestBlockedHint &&
     capturesHaveBizVideoNetworkingPayload(s.captures as Record<string, unknown>)
   ) {
     clearTrialRunPrepareCancel();
     return {
       ok: false as const,
-      error: `采集成功但未能推导入库行（已命中抖音列表/详情类响应）：${bizVideoIngestAttempt.merge_blocked_reason_zh}`,
+      error: `采集成功但未能推导入库行（已命中抖音列表/详情类响应）：${bizVideoIngestBlockedHint}`,
     };
   }
+
+  /** POST 前快照：与实际上传 JSON 一致，且与试跑 UI / 重试载荷 / 对账摘要同源 */
+  const trialIngestRowsSnapshot = cloneFileRuleIngestRowsSnapshot(rowsForIngest);
 
   const ingest = await postEmployeePersonalAuthFileRuleIngest(
     ctx,
     `manual_${runId}`,
     resolvedIngest.ingestRuleLabel,
-    rowsForIngest,
+    trialIngestRowsSnapshot,
     resolvedIngest.mapping,
   );
   if (!ingest.ok) {
     clearTrialRunPrepareCancel();
-    return { ok: false as const, error: `采集成功但入库失败：${ingest.message}` };
+    return {
+      ok: false as const,
+      error: `采集成功但入库失败：${ingest.message}`,
+      ...(trialIngestRowsSnapshot.length > 0
+        ? {
+            ingestRetry: {
+              taskId: `manual_${runId}`,
+              ingestRuleLabel: resolvedIngest.ingestRuleLabel,
+              rows: trialIngestRowsSnapshot,
+              mapping: resolvedIngest.mapping,
+            },
+          }
+        : {}),
+    };
   }
 
+  const forceTrialOkAfterPartial =
+    !s.ok &&
+    trialModeEarly === "enterprise_all_accounts" &&
+    inferredIngestTarget === "biz_video" &&
+    ingest.written + ingest.skipped > 0;
+
   clearTrialRunPrepareCancel();
-  const bizExtras =
+  let bizExtras =
     mt === "biz_video"
       ? buildBizVideoCoverageForAggregate({
           summaryCaptures: s.captures as Record<string, unknown>,
@@ -535,7 +814,7 @@ export async function trialRunAutomationRule(
           accountRunList: trialAccountRunList,
           opsAccounts: trialOpsAccounts,
           syncBatchId: `trial_${runId}`,
-          rowsForIngest,
+          rowsForIngest: trialIngestRowsSnapshot,
           ingest: {
             written: ingest.written,
             skipped: ingest.skipped,
@@ -543,8 +822,14 @@ export async function trialRunAutomationRule(
           },
         })
       : null;
+  if (bizExtras && bizVideoIngestAttempt?.merge_blocked_reason_zh && trialIngestRowsSnapshot.length > 0) {
+    bizExtras = {
+      ...bizExtras,
+      biz_video_coverage_message_zh: `${bizExtras.biz_video_coverage_message_zh} ${bizVideoIngestAttempt.merge_blocked_reason_zh}`,
+    };
+  }
   return trialSummaryToDto(
-    s,
+    forceTrialOkAfterPartial ? { ...s, ok: true } : s,
     runId,
     {
       written: ingest.written,
@@ -554,15 +839,18 @@ export async function trialRunAutomationRule(
       skip_details: ingest.skip_details,
       skip_details_truncated: ingest.skip_details_truncated,
     },
-    bizExtras
-      ? {
-          biz_video_coverage_message_zh: bizExtras.biz_video_coverage_message_zh,
-          biz_video_coverage: bizExtras.biz_video_coverage as BizVideoCoverageSummaryDto | undefined,
-          biz_video_coverage_by_account: bizExtras.biz_video_coverage_by_account as
-            | Record<string, BizVideoCoverageSummaryDto>
-            | undefined,
-        }
-      : undefined,
+    {
+      ...(bizExtras
+        ? {
+            biz_video_coverage_message_zh: bizExtras.biz_video_coverage_message_zh,
+            biz_video_coverage: bizExtras.biz_video_coverage as BizVideoCoverageSummaryDto | undefined,
+            biz_video_coverage_by_account: bizExtras.biz_video_coverage_by_account as
+              | Record<string, BizVideoCoverageSummaryDto>
+              | undefined,
+          }
+        : {}),
+      trial_preview_rows: trialIngestRowsSnapshot,
+    },
   );
   } catch (uncaught) {
     if (trialTaskRuleChild) {
@@ -580,6 +868,47 @@ export async function trialRunAutomationRule(
   }
 }
 
+function profileFromDeviceBindingForTrial(
+  app: App,
+  rows: Record<string, unknown>[],
+  accountId: string,
+): ReturnType<typeof getProfileBySlug> {
+  const needle = accountId.trim().toLowerCase();
+  if (needle.length === 0) {
+    return null;
+  }
+  const row = rows.find(
+    (it) => normalizeBizVideoParamAccountId(it.account_id).toLowerCase() === needle,
+  );
+  const boundSlug =
+    row && typeof row.browser_profile_slug === "string" ? row.browser_profile_slug.trim() : "";
+  if (boundSlug.length === 0) {
+    return null;
+  }
+  return getProfileBySlug(app, boundSlug);
+}
+
+function bizVideoTrialAnchorFromParams(trialParams: Record<string, unknown>): string {
+  const single = normalizeBizVideoParamAccountId(trialParams.account_id);
+  if (single.length > 0) {
+    return single;
+  }
+  return normalizeBizVideoParamAccountIds(trialParams.account_ids).at(0) ?? "";
+}
+
+function bizVideoTrialAccountRunList(trialParams: Record<string, unknown>, modeTrim: string): string[] {
+  if (modeTrim === "enterprise_all_accounts") {
+    const fromArr = normalizeBizVideoParamAccountIds(trialParams.account_ids);
+    if (fromArr.length > 0) {
+      return Array.from(new Set(fromArr));
+    }
+    const single = normalizeBizVideoParamAccountId(trialParams.account_id);
+    return single ? [single] : [];
+  }
+  const anchor = bizVideoTrialAnchorFromParams(trialParams);
+  return Array.from(new Set([anchor].filter((x) => x.length > 0)));
+}
+
 /**
  * 由 `RuleBody.steps` 推断本规则希望写入的 `mapping.target`。当前仅识别员工个人号授权采集。
  * 后续接入更多入库目标时按 capture key 一并枚举即可。
@@ -593,7 +922,12 @@ function inferIngestTargetFromRuleBody(body: RuleBody): string | null {
       if (step.key === "high_dive_wlz_payload" || step.key === "high_dive_ylz_payload") {
         return "biz_lead";
       }
-      if (step.key === "dy_latest_video_payload" || step.key === "dy_video_list_payload" || step.key === "video_list_payload") {
+      if (
+        step.key === "dy_latest_video_payload" ||
+        step.key === "dy_seo_inner_link_payload" ||
+        step.key === "dy_video_list_payload" ||
+        step.key === "video_list_payload"
+      ) {
         return "biz_video";
       }
     }
@@ -644,10 +978,16 @@ function trialSummaryToDto(
     biz_video_coverage_message_zh?: string;
     biz_video_coverage?: BizVideoCoverageSummaryDto;
     biz_video_coverage_by_account?: Record<string, BizVideoCoverageSummaryDto>;
+    /** 试跑表格预览行：与 Runner `s.rows` 可不一致（如 `biz_video` 从 captures 推导入库行）。 */
+    trial_preview_rows?: Record<string, unknown>[];
   },
 ): AutomationRuleTrialRunResultDto {
   if (s.ok) {
     const sm = s.summary ?? {};
+    const summaryRowsRaw = bizTrialFooter?.trial_preview_rows ?? s.rows;
+    const summaryRows = Array.isArray(summaryRowsRaw)
+      ? (summaryRowsRaw as Record<string, unknown>[])
+      : [];
     if (ingest === undefined) {
       return {
         ok: false as const,
@@ -659,7 +999,7 @@ function trialSummaryToDto(
         ok: true as const,
         runId,
         summary: {
-          rows: s.rows,
+          rows: summaryRows,
           captures: s.captures,
           step_durations: Array.isArray(sm.step_durations)
             ? (sm.step_durations as AutomationRuleTrialRunResultDto extends { ok: true }
@@ -668,7 +1008,13 @@ function trialSummaryToDto(
             : [],
           trace_path: s.trace_path ?? null,
           ingest: null,
-          ...(bizTrialFooter ?? {}),
+          ...(bizTrialFooter
+            ? {
+                biz_video_coverage_message_zh: bizTrialFooter.biz_video_coverage_message_zh,
+                biz_video_coverage: bizTrialFooter.biz_video_coverage,
+                biz_video_coverage_by_account: bizTrialFooter.biz_video_coverage_by_account,
+              }
+            : {}),
         },
       };
     }
@@ -676,7 +1022,7 @@ function trialSummaryToDto(
       ok: true as const,
       runId,
       summary: {
-        rows: s.rows,
+        rows: summaryRows,
         captures: s.captures,
         step_durations: Array.isArray(sm.step_durations)
           ? (sm.step_durations as AutomationRuleTrialRunResultDto extends { ok: true }
@@ -685,7 +1031,13 @@ function trialSummaryToDto(
           : [],
         trace_path: s.trace_path ?? null,
         ingest,
-        ...(bizTrialFooter ?? {}),
+        ...(bizTrialFooter
+          ? {
+              biz_video_coverage_message_zh: bizTrialFooter.biz_video_coverage_message_zh,
+              biz_video_coverage: bizTrialFooter.biz_video_coverage,
+              biz_video_coverage_by_account: bizTrialFooter.biz_video_coverage_by_account,
+            }
+          : {}),
       },
     };
   }
@@ -694,5 +1046,5 @@ function trialSummaryToDto(
   if (!em) {
     return { ok: false as const, error: "执行失败（无具体原因）" };
   }
-  return { ok: false as const, error: `${ec}: ${em}` };
+  return { ok: false as const, error: `${ec}: ${augmentRunnerErrorMessageForDisplay(ec, em)}` };
 }
