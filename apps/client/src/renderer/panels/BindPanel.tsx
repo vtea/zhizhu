@@ -56,22 +56,6 @@ export function BindPanel({ state, refresh }: BindPanelProps) {
     }
   };
 
-  const onOpenConsole = useCallback((): void => {
-    if (!window.zhizhu) return;
-    void withTimeout(window.zhizhu.openWebConsole(), 25_000, "open-web")
-      .then((r) => {
-        if (r.ok) {
-          setStatus(`已在浏览器中请求打开：${r.url}`);
-        } else {
-          setStatus(r.error, "error");
-        }
-      })
-      .catch((e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        setStatus(`打开控制台失败：${msg}`, "error");
-      });
-  }, [setStatus]);
-
   const deviceLine = state?.deviceId
     ? `本机设备 ID：${state.deviceId}`
     : "尚未绑定设备：在下方填写一次性绑定码后点击「绑定设备」。";
@@ -127,9 +111,6 @@ export function BindPanel({ state, refresh }: BindPanelProps) {
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={() => void submit()} isLoading={busy}>
               绑定设备
-            </Button>
-            <Button variant="primary" onClick={onOpenConsole}>
-              打开控制台（浏览器）
             </Button>
           </div>
         </div>

@@ -20,7 +20,8 @@ export interface UseAutomationRulesApi extends UseAutomationRulesState {
   refreshRunnerLoop: () => Promise<void>;
 }
 
-const POLL_INTERVAL_MS = 8_000;
+/** 与自动化规则列表轮询一致；业务账号列表刷新可对齐该间隔 */
+export const POLL_INTERVAL_MS = 8_000;
 
 export function useAutomationRules(active: boolean): UseAutomationRulesApi {
   const [state, setState] = useState<UseAutomationRulesState>({

@@ -1,7 +1,6 @@
 import type { ApiReachSnapshot, ClientStateDto } from "../../sharedTypes";
-import { Banner, Button, SectionCard } from "../ui";
-import { DEFAULT_API_BASE_FALLBACK, formatProbeClock, withTimeout } from "../utils";
-import { useStatus } from "../hooks/useStatus";
+import { Banner, SectionCard } from "../ui";
+import { DEFAULT_API_BASE_FALLBACK, formatProbeClock } from "../utils";
 
 type HomePanelProps = {
   state: ClientStateDto | null;
@@ -37,26 +36,9 @@ function describeApiReach(reach: ApiReachSnapshot | null): { text: string; bad: 
 }
 
 export function HomePanel({ state, apiReach, loading, error }: HomePanelProps) {
-  const { setStatus } = useStatus();
   const summary = describeSummary(state);
   const reach = describeApiReach(apiReach);
   const baseUrl = state?.webBaseUrl ?? (loading ? "控制台基址：正在从本机进程读取…" : "（未能读取控制台基址）");
-
-  const onOpenConsole = (): void => {
-    if (!window.zhizhu) return;
-    void withTimeout(window.zhizhu.openWebConsole(), 25_000, "open-web")
-      .then((r) => {
-        if (r.ok) {
-          setStatus(`已在浏览器中请求打开：${r.url}`);
-        } else {
-          setStatus(r.error, "error");
-        }
-      })
-      .catch((e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        setStatus(`打开控制台失败：${msg}`, "error");
-      });
-  };
 
   return (
     <SectionCard title="客户端总览">
@@ -71,18 +53,6 @@ export function HomePanel({ state, apiReach, loading, error }: HomePanelProps) {
           {reach.text}
         </p>
         {error ? <Banner kind="error">无法读取完整状态：{error}</Banner> : null}
-        <div className="flex flex-wrap gap-2">
-          <Button variant="primary" onClick={onOpenConsole}>
-            打开控制台（浏览器）
-          </Button>
-        </div>
-        <Banner kind="info">
-          基址：<code className="font-mono">ZHIZHU_WEB_BASE_URL</code>；API：
-          <code className="font-mono">ZHIZHU_API_BASE_URL</code>（默认同机 :3000）；可选 WSS：
-          <code className="font-mono">ZHIZHU_WSS_URL</code>。默认租户：
-          <code className="font-mono">ZHIZHU_DEFAULT_TENANT</code>。状态文件位于应用 userData 目录下的{" "}
-          <code className="font-mono">client-state.json</code>。
-        </Banner>
       </div>
     </SectionCard>
   );

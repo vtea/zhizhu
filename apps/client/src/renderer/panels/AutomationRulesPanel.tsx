@@ -11,7 +11,7 @@ import type {
 import { mergeDyHomepageUrlIntoParams } from "../../bizVideoDyHomepageMerge";
 import { sameDyLeadsEnterpriseId } from "../../dyLeadsEnterpriseId";
 import { Banner, Button, Field, Pill, SectionCard, TextInput } from "../ui";
-import { useAutomationRules } from "../hooks/useAutomationRules";
+import { POLL_INTERVAL_MS, useAutomationRules } from "../hooks/useAutomationRules";
 import { useStatus } from "../hooks/useStatus";
 import { formatTs, withTimeout } from "../utils";
 
@@ -591,15 +591,19 @@ export function AutomationRulesPanel({
     }
   }, [runnerEnterprises, structuredDraft.dyLeadsEnterpriseId]);
 
-  useEffect(() => {
-    if (!active || !window.zhizhu || !structuredDraft.dyLeadsEnterpriseId.trim()) {
+  const loadRunnerAccounts = useCallback((): void => {
+    if (!active || !window.zhizhu) {
+      return;
+    }
+    const eid = structuredDraft.dyLeadsEnterpriseId.trim();
+    if (!eid) {
       setRunnerAccounts([]);
       return;
     }
     setRunnerAccountsPending(true);
     setRunnerDataError(null);
     void window.zhizhu
-      .listRunnerOpsAccounts({ dyLeadsEnterpriseId: structuredDraft.dyLeadsEnterpriseId })
+      .listRunnerOpsAccounts({ dyLeadsEnterpriseId: eid })
       .then((r) => {
         if (!r.ok) {
           setRunnerDataError(r.error);
@@ -614,6 +618,45 @@ export function AutomationRulesPanel({
       })
       .finally(() => setRunnerAccountsPending(false));
   }, [active, structuredDraft.dyLeadsEnterpriseId]);
+
+  useEffect(() => {
+    if (!active) {
+      setRunnerAccounts([]);
+      return;
+    }
+    if (!window.zhizhu || !structuredDraft.dyLeadsEnterpriseId.trim()) {
+      setRunnerAccounts([]);
+      return;
+    }
+    void loadRunnerAccounts();
+  }, [active, structuredDraft.dyLeadsEnterpriseId, loadRunnerAccounts]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const onVis = (): void => {
+      if (document.visibilityState !== "visible" || !active) {
+        return;
+      }
+      if (!structuredDraft.dyLeadsEnterpriseId.trim()) {
+        return;
+      }
+      void loadRunnerAccounts();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [active, structuredDraft.dyLeadsEnterpriseId, loadRunnerAccounts]);
+
+  useEffect(() => {
+    if (!active || !structuredDraft.dyLeadsEnterpriseId.trim()) {
+      return;
+    }
+    const t = window.setInterval(() => {
+      void loadRunnerAccounts();
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(t);
+  }, [active, structuredDraft.dyLeadsEnterpriseId, loadRunnerAccounts]);
 
   useEffect(() => {
     if (!selected || trialParamsMode !== "form") {
@@ -800,8 +843,9 @@ export function AutomationRulesPanel({
         setForceSyncBusy(false);
         void rules.refresh();
         void rules.refreshSync();
+        void loadRunnerAccounts();
       });
-  }, [rules, setStatus]);
+  }, [rules, setStatus, loadRunnerAccounts]);
 
   const onPumpRunnerLoop = useCallback(() => {
     if (!window.zhizhu) return;

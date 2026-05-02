@@ -77,22 +77,6 @@ export function TenantPanel({ state, refresh }: TenantPanelProps) {
     }
   }, [fetchRegistry, refresh, saving, setStatus, tenant]);
 
-  const onOpenConsole = useCallback((): void => {
-    if (!window.zhizhu) return;
-    void withTimeout(window.zhizhu.openWebConsole(), 25_000, "open-web")
-      .then((r) => {
-        if (r.ok) {
-          setStatus(`已在浏览器中请求打开：${r.url}`);
-        } else {
-          setStatus(r.error, "error");
-        }
-      })
-      .catch((e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        setStatus(`打开控制台失败：${msg}`, "error");
-      });
-  }, [setStatus]);
-
   const savedTenant =
     state?.savedTenantId != null && state.savedTenantId.length > 0
       ? state.savedTenantId
@@ -124,9 +108,6 @@ export function TenantPanel({ state, refresh }: TenantPanelProps) {
             </Button>
             <Button variant="ghost" onClick={() => void fetchRegistry()}>
               刷新登记状态
-            </Button>
-            <Button variant="primary" onClick={onOpenConsole}>
-              打开控制台（浏览器）
             </Button>
           </div>
         </div>

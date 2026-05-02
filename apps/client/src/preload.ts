@@ -160,6 +160,8 @@ export type ZhizhuClientApi = {
   listTaskCenterRuns: (input?: { limit?: number }) => Promise<
     { ok: true; runs: TaskCenterRunRecordDto[] } | { ok: false; error: string }
   >;
+  deleteTaskCenterRun: (input: { runId: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
+  clearTaskCenterRuns: () => Promise<{ ok: true } | { ok: false; error: string }>;
   getTaskLocalOverride: (
     taskId: string,
   ) => Promise<{ ok: true; override: TaskLocalOverrideEntryDto | null } | { ok: false; error: string }>;
@@ -295,6 +297,8 @@ const api: ZhizhuClientApi = {
   listRunnerTasks: (input) => ipcRenderer.invoke("list-runner-tasks", input),
   patchRunnerTask: (input) => ipcRenderer.invoke("patch-runner-task", input),
   listTaskCenterRuns: (input) => ipcRenderer.invoke("list-task-center-runs", input ?? {}),
+  deleteTaskCenterRun: (input) => ipcRenderer.invoke("delete-task-center-run", input),
+  clearTaskCenterRuns: () => ipcRenderer.invoke("clear-task-center-runs"),
   getTaskLocalOverride: (taskId) => ipcRenderer.invoke("get-task-local-override", taskId),
   setTaskLocalOverride: (input) => ipcRenderer.invoke("set-task-local-override", input),
   clearTaskLocalOverride: (taskId) => ipcRenderer.invoke("clear-task-local-override", taskId),

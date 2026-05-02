@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { PlaywrightBrowserProfileRecord } from "../../sharedTypes";
-import { Banner, Button, Field, Pill, SectionCard, TextInput } from "../ui";
+import { Banner, Button, Field, Modal, Pill, SectionCard, TextInput } from "../ui";
 import { useStatus } from "../hooks/useStatus";
 import { usePlaywrightHeaded } from "../hooks/usePlaywrightHeaded";
 import { usePlaywrightProfiles } from "../hooks/usePlaywrightProfiles";
@@ -18,6 +18,8 @@ type EditDraft = {
   createdAt?: string;
   updatedAt?: string;
 };
+
+type PanelModal = { kind: "closed" } | { kind: "create" } | { kind: "edit"; draft: EditDraft };
 
 function describeClientConfigSyncStatus(s: {
   lastOkAt: string | null;
@@ -77,8 +79,23 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
   const [creatingSlug, setCreatingSlug] = useState("");
   const [creatingLabel, setCreatingLabel] = useState("");
   const [creatingPath, setCreatingPath] = useState("");
-  const [edit, setEdit] = useState<EditDraft | null>(null);
+  const [modal, setModal] = useState<PanelModal>({ kind: "closed" });
   const [forceSyncBusy, setForceSyncBusy] = useState(false);
+
+  const closeModal = useCallback((): void => {
+    setModal({ kind: "closed" });
+  }, []);
+
+  const openCreateModal = useCallback((): void => {
+    setCreatingSlug("");
+    setCreatingLabel("");
+    setCreatingPath("");
+    setModal({ kind: "create" });
+  }, []);
+
+  const patchEditDraft = useCallback((patch: Partial<EditDraft>): void => {
+    setModal((m) => (m.kind === "edit" ? { kind: "edit", draft: { ...m.draft, ...patch } } : m));
+  }, []);
 
   const onRefresh = useCallback(async (): Promise<void> => {
     await Promise.all([profiles.refresh(), profiles.refreshSyncStatus(), headed.refresh()]);
@@ -147,6 +164,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
         setCreatingSlug("");
         setCreatingLabel("");
         setCreatingPath("");
+        setModal({ kind: "closed" });
         void profiles.refresh();
       })
       .catch((e) => {
@@ -185,7 +203,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
             setStatus(dr.error, "error");
             return;
           }
-          setStatus("已设为托盘/应用程序菜单默认打开的配置。", "info");
+          setStatus("已设为默认浏览器。", "info");
           void profiles.refresh();
         })
         .catch((e) => {
@@ -212,7 +230,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
             setStatus(r.error, "error");
             return;
           }
-          setEdit((cur) => (cur && cur.id === id ? null : cur));
+          setModal((cur) => (cur.kind === "edit" && cur.draft.id === id ? { kind: "closed" } : cur));
           setStatus("已删除。");
           void profiles.refresh();
         })
@@ -225,18 +243,22 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
   );
 
   const startEdit = (p: PlaywrightBrowserProfileRecord): void => {
-    setEdit({
-      id: p.id,
-      label: p.label,
-      slug: p.slug,
-      defaultStartPath: p.defaultStartPath?.trim() ?? "",
-      createdAt: p.createdAt,
-      updatedAt: p.updatedAt,
+    setModal({
+      kind: "edit",
+      draft: {
+        id: p.id,
+        label: p.label,
+        slug: p.slug,
+        defaultStartPath: p.defaultStartPath?.trim() ?? "",
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+      },
     });
   };
 
   const saveEdit = useCallback((): void => {
-    if (!window.zhizhu || !edit) return;
+    if (!window.zhizhu || modal.kind !== "edit") return;
+    const edit = modal.draft;
     const patch = {
       label: edit.label.trim(),
       newSlug: edit.slug.trim(),
@@ -253,19 +275,23 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
           return;
         }
         setStatus(`已保存「${ur.profile.slug}」`);
-        setEdit(null);
+        setModal({ kind: "closed" });
         void profiles.refresh();
       })
       .catch((e) => {
         const msg = e instanceof Error ? e.message : String(e);
         setStatus(`保存失败：${msg}`, "error");
       });
-  }, [edit, profiles, setStatus]);
+  }, [modal, profiles, setStatus]);
 
   const visualSessionLine = describeVisualSessions(headed);
   const syncLine = profiles.syncStatus
     ? describeClientConfigSyncStatus(profiles.syncStatus)
     : "客户端配置同步：加载中…";
+
+  const modalOpen = modal.kind !== "closed";
+  const modalTitle =
+    modal.kind === "create" ? "新建浏览器配置" : modal.kind === "edit" ? "编辑本机浏览器配置" : "";
 
   return (
     <div className="flex flex-col gap-4">
@@ -300,13 +326,20 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
         </div>
       </SectionCard>
 
-      <SectionCard title="已保存的浏览器配置">
+      <SectionCard
+        title="已保存的浏览器配置"
+        actions={
+          <Button variant="primary" type="button" onClick={openCreateModal}>
+            创建浏览器
+          </Button>
+        }
+      >
         {profiles.errorMsg ? (
           <Banner kind="error">{profiles.errorMsg}</Banner>
         ) : profiles.loading && profiles.profiles.length === 0 ? (
           <p className="zz-meta-line">加载中…</p>
         ) : profiles.profiles.length === 0 ? (
-          <Banner kind="info">暂无配置。请先在下文「新建配置」中创建。</Banner>
+          <Banner kind="info">暂无配置。请点击本卡片右上角「创建浏览器」添加。</Banner>
         ) : (
           <div className="flex flex-col gap-3">
             {profiles.profiles.map((p) => {
@@ -315,7 +348,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
                 <article key={p.id} className="zz-pw-card">
                   <header className="flex flex-wrap items-baseline justify-between gap-2">
                     <h3 className="zz-pw-card-title">
-                      {isDef ? <Pill tone="info">托盘/菜单默认</Pill> : null}
+                      {isDef ? <Pill tone="info">默认浏览器</Pill> : null}
                       <span className={isDef ? "ml-2" : ""}>{p.label}</span>
                     </h3>
                     <span className="zz-meta-line">浏览器环境标识：{p.slug}</span>
@@ -338,7 +371,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
                       disabled={isDef}
                       onClick={() => onSetDefault(p.id)}
                     >
-                      {isDef ? "已是默认配置" : "设为托盘默认"}
+                      {isDef ? "已是默认配置" : "设为默认浏览器"}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => startEdit(p)}>
                       编辑
@@ -354,28 +387,77 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
         )}
       </SectionCard>
 
-      {edit ? (
-        <SectionCard
-          title="编辑本机浏览器配置"
-          description={`客户端内部编号（UUID）：${edit.id}`}
-          actions={
-            <>
-              <Button variant="primary" onClick={saveEdit}>
-                保存修改
-              </Button>
-              <Button variant="ghost" onClick={() => setEdit(null)}>
-                取消编辑
-              </Button>
-            </>
-          }
-        >
+      <Modal open={modalOpen} onClose={closeModal} title={modalTitle}>
+        {modal.kind === "create" ? (
           <div className="flex flex-col gap-3">
+            <Field
+              label="浏览器环境标识（Slug）"
+              hint={(
+                <span>
+                  与将来任务参数 <code className="font-mono">browser_profile_slug</code> 同名；本机磁盘目录同名。
+                </span>
+              )}
+            >
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  value={creatingSlug}
+                  onChange={(e) => setCreatingSlug(e.target.value)}
+                  aria-describedby={describedBy}
+                  placeholder="小写英文、数字、短横线与下划线（如 account-a、shop_01）"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
             <Field label="显示名称">
               {({ id, describedBy }) => (
                 <TextInput
                   id={id}
-                  value={edit.label}
-                  onChange={(e) => setEdit({ ...edit, label: e.target.value })}
+                  value={creatingLabel}
+                  onChange={(e) => setCreatingLabel(e.target.value)}
+                  aria-describedby={describedBy}
+                  placeholder="可使用中文备注，便于识别"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field
+              label="默认起始地址（可选）"
+              hint="例如控制台内相对路径 /tenant/… 或外链 https://…；留空则控制台首页"
+            >
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  value={creatingPath}
+                  onChange={(e) => setCreatingPath(e.target.value)}
+                  aria-describedby={describedBy}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button variant="primary" type="button" onClick={onCreate}>
+                创建
+              </Button>
+              <Button variant="ghost" type="button" onClick={closeModal}>
+                取消
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {modal.kind === "edit" ? (
+          <div className="flex flex-col gap-3">
+            <p className="zz-meta-line text-sm">客户端内部编号（UUID）：{modal.draft.id}</p>
+            <Field label="显示名称">
+              {({ id, describedBy }) => (
+                <TextInput
+                  id={id}
+                  value={modal.draft.label}
+                  onChange={(e) => patchEditDraft({ label: e.target.value })}
                   aria-describedby={describedBy}
                   autoComplete="off"
                 />
@@ -388,8 +470,8 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
               {({ id, describedBy }) => (
                 <TextInput
                   id={id}
-                  value={edit.slug}
-                  onChange={(e) => setEdit({ ...edit, slug: e.target.value })}
+                  value={modal.draft.slug}
+                  onChange={(e) => patchEditDraft({ slug: e.target.value })}
                   aria-describedby={describedBy}
                   autoComplete="off"
                 />
@@ -402,83 +484,32 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
               {({ id, describedBy }) => (
                 <TextInput
                   id={id}
-                  value={edit.defaultStartPath}
-                  onChange={(e) => setEdit({ ...edit, defaultStartPath: e.target.value })}
+                  value={modal.draft.defaultStartPath}
+                  onChange={(e) => patchEditDraft({ defaultStartPath: e.target.value })}
                   aria-describedby={describedBy}
                   autoComplete="off"
                 />
               )}
             </Field>
             <p className="zz-meta-line">
-              创建于 {formatTs(edit.createdAt)} · 更新于 {formatTs(edit.updatedAt)}
+              创建于 {formatTs(modal.draft.createdAt)} · 更新于 {formatTs(modal.draft.updatedAt)}
             </p>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button variant="primary" type="button" onClick={saveEdit}>
+                保存修改
+              </Button>
+              <Button variant="ghost" type="button" onClick={closeModal}>
+                取消
+              </Button>
+            </div>
           </div>
-        </SectionCard>
-      ) : null}
-
-      <SectionCard
-        title="新建配置"
-        actions={
-          <Button variant="primary" onClick={onCreate}>
-            创建
-          </Button>
-        }
-      >
-        <div className="flex flex-col gap-3">
-          <Field
-            label="浏览器环境标识（Slug）"
-            hint={(
-              <span>
-                与将来任务参数 <code className="font-mono">browser_profile_slug</code> 同名；本机磁盘目录同名。
-              </span>
-            )}
-          >
-            {({ id, describedBy }) => (
-              <TextInput
-                id={id}
-                value={creatingSlug}
-                onChange={(e) => setCreatingSlug(e.target.value)}
-                aria-describedby={describedBy}
-                placeholder="小写英文、数字、短横线与下划线（如 account-a、shop_01）"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label="显示名称">
-            {({ id, describedBy }) => (
-              <TextInput
-                id={id}
-                value={creatingLabel}
-                onChange={(e) => setCreatingLabel(e.target.value)}
-                aria-describedby={describedBy}
-                placeholder="可使用中文备注，便于识别"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field
-            label="默认起始地址（可选）"
-            hint="例如控制台内相对路径 /tenant/… 或外链 https://…；留空则控制台首页"
-          >
-            {({ id, describedBy }) => (
-              <TextInput
-                id={id}
-                value={creatingPath}
-                onChange={(e) => setCreatingPath(e.target.value)}
-                aria-describedby={describedBy}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-        </div>
-      </SectionCard>
+        ) : null}
+      </Modal>
 
       <Banner kind="info">
         使用系统 Node 运行 <code className="font-mono">@zhizhu/runner</code> 的{" "}
-        <code className="font-mono">headed-login</code>；须已安装 Playwright Chromium。同一时间仅允许打开一个可视化会话；托盘与菜单「Playwright 可视化浏览器」可优先使用「默认配置」打开。
+        <code className="font-mono">headed-login</code>；须已安装 Playwright Chromium。同一时间仅允许打开一个可视化会话；托盘与菜单「Playwright
+        可视化浏览器」可优先使用已设为默认的浏览器配置打开。
       </Banner>
     </div>
   );

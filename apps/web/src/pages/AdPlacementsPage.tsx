@@ -26,6 +26,27 @@ import { Link, useSearchParams } from "react-router-dom";
 
 const PAGE_SIZE = 10;
 
+/** 写入 biz_ad_placement.placement_status 的规范取值 */
+const PLACEMENT_STATUS_OPTIONS = ["投放中", "停止投放", "需要复盘"] as const;
+
+function isStandardPlacementStatus(s: string): boolean {
+  return (PLACEMENT_STATUS_OPTIONS as readonly string[]).includes(s);
+}
+
+function videoNameDisplayBase(r: AdPlacementRow): string {
+  const t = r.dy_title?.trim();
+  return t || r.dy_video_id;
+}
+
+/** 列表「视频名称」：仅展示前 10 字，超出省略（完整串用 title 悬停查看） */
+function clipVideoNameCell(r: AdPlacementRow): { full: string; shown: string } {
+  const full = videoNameDisplayBase(r);
+  if (full.length <= 10) {
+    return { full, shown: full };
+  }
+  return { full, shown: `${full.slice(0, 10)}…` };
+}
+
 function parsePage(raw: string | null): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) {
@@ -193,7 +214,7 @@ export function AdPlacementsPage() {
   const saveMut = useMutation({
     mutationFn: async () => {
       if (!accountId.trim() || !dyVideoId.trim() || !adDate.trim()) {
-        throw new Error("请填写投放账号、抖音视频 ID 与投放日");
+        throw new Error("请填写投放账号、视频 ID 与投放日");
       }
       const body = {
         account_id: accountId.trim(),
@@ -233,7 +254,7 @@ export function AdPlacementsPage() {
   async function onFillMetrics() {
     setMetricsHint(null);
     if (!dyVideoId.trim()) {
-      setMetricsHint("请先填写抖音视频 ID");
+      setMetricsHint("请先填写视频 ID");
       return;
     }
     try {
@@ -259,7 +280,18 @@ export function AdPlacementsPage() {
 
   const columns: DataColumn<AdPlacementRow>[] = [
     { id: "ad_date", header: "投放日", cell: (r) => r.ad_date },
-    { id: "video", header: "抖音视频 ID", cell: (r) => <span className="font-mono text-xs">{r.dy_video_id}</span> },
+    {
+      id: "video",
+      header: "视频名称",
+      cell: (r) => {
+        const { full, shown } = clipVideoNameCell(r);
+        return (
+          <span className="text-xs" title={full}>
+            {shown}
+          </span>
+        );
+      },
+    },
     {
       id: "publish",
       header: "发布方账号",
@@ -313,7 +345,7 @@ export function AdPlacementsPage() {
       cell: (r) => (
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="secondary" size="sm" onClick={() => fillFromRow(r)}>
-            载入编辑
+            编辑
           </Button>
           <Button
             variant="danger"
@@ -391,7 +423,7 @@ export function AdPlacementsPage() {
                       </SelectInput>
                     )}
                   </Field>
-                  <Field label="抖音视频 ID">
+                  <Field label="视频 ID">
                     {({ id, describedBy }) => (
                       <TextInput
                         id={id}
@@ -420,9 +452,24 @@ export function AdPlacementsPage() {
                       <TextInput id={id} aria-describedby={describedBy} value={spend} onChange={(ev) => setSpend(ev.target.value)} placeholder="可选" />
                     )}
                   </Field>
-                  <Field label="状态文案">
+                  <Field label="状态">
                     {({ id, describedBy }) => (
-                      <TextInput id={id} aria-describedby={describedBy} value={placementStatus} onChange={(ev) => setPlacementStatus(ev.target.value)} placeholder="可选" />
+                      <SelectInput
+                        id={id}
+                        aria-describedby={describedBy}
+                        value={placementStatus}
+                        onChange={(ev) => setPlacementStatus(ev.target.value)}
+                      >
+                        <option value="">未选择</option>
+                        {PLACEMENT_STATUS_OPTIONS.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                        {placementStatus.trim() && !isStandardPlacementStatus(placementStatus) ? (
+                          <option value={placementStatus}>{placementStatus}（历史值）</option>
+                        ) : null}
+                      </SelectInput>
                     )}
                   </Field>
                   <div className="sm:col-span-2 flex flex-wrap items-center gap-2">

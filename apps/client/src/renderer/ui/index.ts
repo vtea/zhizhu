@@ -4,6 +4,7 @@ export { TextInput } from "./TextInput";
 export { Field } from "./Field";
 export { Card } from "./Card";
 export { SectionCard } from "./SectionCard";
+export { Modal } from "./Modal";
 export { Banner } from "./Banner";
 export type { BannerKind } from "./Banner";
 export { Pill } from "./Pill";

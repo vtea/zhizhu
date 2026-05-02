@@ -152,3 +152,24 @@ export function appendTaskCenterRun(app: App, rec: Omit<TaskCenterRunRecord, "ru
   atomicWrite(app, ledger);
   return full;
 }
+
+/** 删除单条；不存在对应 run_id 时返回 false */
+export function removeTaskCenterRunById(app: App, runId: string): boolean {
+  const id = runId.trim();
+  if (!id) {
+    return false;
+  }
+  const ledger = readLedger(app);
+  const before = ledger.runs.length;
+  ledger.runs = ledger.runs.filter((r) => r.run_id !== id);
+  if (ledger.runs.length === before) {
+    return false;
+  }
+  atomicWrite(app, ledger);
+  return true;
+}
+
+/** 清空全部本机执行记录（不落盘备份） */
+export function clearAllTaskCenterRuns(app: App): void {
+  atomicWrite(app, emptyLedger());
+}

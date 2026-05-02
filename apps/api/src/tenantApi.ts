@@ -523,7 +523,8 @@ export async function listAdPlacements(
               p.is_current, p.placement_status,
               p.remind_at::text AS remind_at, p.created_at::text AS created_at, p.updated_at::text AS updated_at,
               v.account_id AS publish_account_id,
-              pub.dy_display_name AS publish_account_display_name
+              pub.dy_display_name AS publish_account_display_name,
+              v.dy_title
        FROM biz_ad_placement p
        LEFT JOIN biz_video v
          ON v.tenant_id = p.tenant_id AND v.platform = p.platform AND v.dy_video_id = p.dy_video_id

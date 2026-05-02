@@ -76,7 +76,12 @@ import {
   startRunnerLoop,
   stopRunnerLoop,
 } from "./runnerLoop";
-import { appendTaskCenterRun, listTaskCenterRuns } from "./taskCenterLedger";
+import {
+  appendTaskCenterRun,
+  clearAllTaskCenterRuns,
+  listTaskCenterRuns,
+  removeTaskCenterRunById,
+} from "./taskCenterLedger";
 import { deleteTrialIngestStash, pruneTrialIngestStashes, readTrialIngestStash, writeTrialIngestStash } from "./trialIngestStash";
 import {
   clearTaskLocalOverride,
@@ -336,7 +341,7 @@ function rebuildTrayMenu(): void {
   };
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "打开控制台（浏览器）", click: openWeb },
+      { label: "打开控制台", click: openWeb },
       { label: "显示主窗口", click: showMain },
       { label: "自动化规则", click: openAutomationRulesTab },
       { label: "切换客户端日志", click: requestToggleClientLogInFocusedShell },
@@ -824,10 +829,10 @@ function createWindow() {
     console.error("[zhizhu-client] 缺少 preload.js，请在 apps/client 执行 npm run build。路径:", preloadPath);
   }
   const win = new BrowserWindow({
-    width: 980,
-    height: 760,
-    minWidth: 820,
-    minHeight: 620,
+    width: 1200,
+    height: 980,
+    minWidth: 1200,
+    minHeight: 980,
     show: true,
     title: "知竹 · 自动化",
     webPreferences: {
@@ -1972,6 +1977,40 @@ void (function registerPrimaryInstanceAppHooks(): void {
       return { ok: true as const, runs: listTaskCenterRuns(app, limit) };
     } catch (e) {
       console.error("[zhizhu-client] list-task-center-runs 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("delete-task-center-run", async (event, payload: unknown) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      const runId = typeof obj.runId === "string" ? obj.runId.trim() : "";
+      if (!runId) {
+        return { ok: false as const, error: "run_id 无效" };
+      }
+      const removed = removeTaskCenterRunById(app, runId);
+      if (!removed) {
+        return { ok: false as const, error: "未找到该执行记录" };
+      }
+      return { ok: true as const };
+    } catch (e) {
+      console.error("[zhizhu-client] delete-task-center-run 异常：", e);
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle("clear-task-center-runs", async (event) => {
+    if (!isTrustedRendererIpcSender(event.sender)) {
+      return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
+    }
+    try {
+      clearAllTaskCenterRuns(app);
+      return { ok: true as const };
+    } catch (e) {
+      console.error("[zhizhu-client] clear-task-center-runs 异常：", e);
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
   });

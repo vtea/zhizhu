@@ -24,6 +24,8 @@ export type AdPlacementRow = {
   /** 关联 biz_video：视频发布方账号（字典 §6.3） */
   publish_account_id?: string | null;
   publish_account_display_name?: string | null;
+  /** 关联 biz_video：视频标题，列表「视频名称」优先展示 */
+  dy_title?: string | null;
 };
 
 export type ListAdPlacementsQuery = {

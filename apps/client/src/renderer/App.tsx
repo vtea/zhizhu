@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ZhizhuClientApi } from "../preload";
 import { Banner, Button, TabPanel, Tabs, type TabItem } from "./ui";
+import { withTimeout } from "./utils";
 import { useClientState } from "./hooks/useClientState";
 import { useLogPanel } from "./hooks/useLogPanel";
 import { useStatus } from "./hooks/useStatus";
@@ -40,7 +41,23 @@ export function App() {
   const [automationRuleFocusId, setAutomationRuleFocusId] = useState<string | null>(null);
   const clearAutomationRuleFocus = useCallback(() => setAutomationRuleFocusId(null), []);
   const log = useLogPanel();
-  const { state: status } = useStatus();
+  const { setStatus, state: status } = useStatus();
+
+  const onOpenConsole = useCallback((): void => {
+    if (!window.zhizhu) return;
+    void withTimeout(window.zhizhu.openWebConsole(), 25_000, "open-web")
+      .then((r) => {
+        if (r.ok) {
+          setStatus(`已在浏览器中请求打开：${r.url}`);
+        } else {
+          setStatus(r.error, "error");
+        }
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        setStatus(`打开控制台失败：${msg}`, "error");
+      });
+  }, [setStatus]);
 
   useEffect(() => {
     const api = window.zhizhu;
@@ -91,16 +108,21 @@ export function App() {
           label="客户端分区"
           idFor={panelDomId}
         />
-        <Button
-          variant="primary"
-          className="rounded-[12px]"
-          onClick={log.toggle}
-          aria-expanded={log.open}
-          disabled={!log.preloadOk}
-          title={log.preloadOk ? undefined : "需重建客户端：在 apps/client 执行 npm run build 后重启 Electron"}
-        >
-          {log.open ? "关闭日志" : "日志"}
-        </Button>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <Button variant="primary" className="rounded-[12px]" type="button" onClick={onOpenConsole}>
+            打开控制台
+          </Button>
+          <Button
+            variant="primary"
+            className="rounded-[12px]"
+            onClick={log.toggle}
+            aria-expanded={log.open}
+            disabled={!log.preloadOk}
+            title={log.preloadOk ? undefined : "需重建客户端：在 apps/client 执行 npm run build 后重启 Electron"}
+          >
+            {log.open ? "关闭日志" : "日志"}
+          </Button>
+        </div>
       </header>
 
       {log.open ? (

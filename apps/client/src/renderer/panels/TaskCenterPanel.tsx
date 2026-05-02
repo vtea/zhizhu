@@ -251,6 +251,7 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
   const [runsError, setRunsError] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [retryStashBusy, setRetryStashBusy] = useState(false);
+  const [clearRunsBusy, setClearRunsBusy] = useState(false);
   /** 试跑等账本仅含 rule_id：用本机已同步规则列表解析展示名 */
   const [localRuleNames, setLocalRuleNames] = useState<Map<string, string>>(() => new Map());
 
@@ -688,30 +689,75 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
       });
   }, [selectedTaskId, setStatus]);
 
+  const retryTrialIngestForRun = useCallback(
+    (rec: TaskCenterRunRecordDto) => {
+      if (rec.kind !== "trial" || rec.ok || !hasTrialIngestStashFlag(rec)) {
+        return;
+      }
+      const zh = window.zhizhu;
+      if (!zh?.retryTrialIngestFromStash) {
+        setStatus("当前客户端版本不支持从任务中心重试入库，请更新后重试。", "error");
+        return;
+      }
+      setRetryStashBusy(true);
+      void withTimeout(zh.retryTrialIngestFromStash({ stashId: rec.run_id }), 120_000, "retry-trial-ingest-from-stash")
+        .then((r) => {
+          if (!panelAliveRef.current) {
+            return;
+          }
+          if (r.ok) {
+            setStatus(
+              `重试入库成功：写入 ${r.written}，跳过 ${r.skipped}${r.target ? `，目标 ${r.target}` : ""}。`,
+              "info",
+            );
+            void refreshRuns();
+          } else {
+            setStatus(`重试入库失败：${r.error}`, "error");
+          }
+        })
+        .catch((e) => {
+          if (panelAliveRef.current) {
+            setStatus(e instanceof Error ? e.message : String(e), "error");
+          }
+        })
+        .finally(() => {
+          if (panelAliveRef.current) {
+            setRetryStashBusy(false);
+          }
+        });
+    },
+    [setStatus, refreshRuns],
+  );
+
   const onRetryTrialIngestFromStash = useCallback(() => {
-    const rec = selectedRun;
-    if (!rec || rec.kind !== "trial" || rec.ok || !hasTrialIngestStashFlag(rec)) {
+    if (!selectedRun) {
       return;
     }
+    retryTrialIngestForRun(selectedRun);
+  }, [selectedRun, retryTrialIngestForRun]);
+
+  const onClearTaskCenterRuns = useCallback(() => {
     const zh = window.zhizhu;
-    if (!zh?.retryTrialIngestFromStash) {
-      setStatus("当前客户端版本不支持从任务中心重试入库，请更新后重试。", "error");
+    if (!zh?.clearTaskCenterRuns) {
+      setStatus("当前客户端不支持清空本机执行记录，请更新后重试。", "error");
       return;
     }
-    setRetryStashBusy(true);
-    void withTimeout(zh.retryTrialIngestFromStash({ stashId: rec.run_id }), 120_000, "retry-trial-ingest-from-stash")
+    if (!confirm("确定清空全部本机执行记录？此操作不可恢复。")) {
+      return;
+    }
+    setClearRunsBusy(true);
+    void zh
+      .clearTaskCenterRuns()
       .then((r) => {
         if (!panelAliveRef.current) {
           return;
         }
         if (r.ok) {
-          setStatus(
-            `重试入库成功：写入 ${r.written}，跳过 ${r.skipped}${r.target ? `，目标 ${r.target}` : ""}。`,
-            "info",
-          );
+          setSelectedRunId(null);
+          setStatus("已清空本机执行记录。", "info");
           void refreshRuns();
         } else {
-          setStatus(`重试入库失败：${r.error}`, "error");
+          setStatus(r.error, "error");
         }
       })
       .catch((e) => {
@@ -721,10 +767,43 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
       })
       .finally(() => {
         if (panelAliveRef.current) {
-          setRetryStashBusy(false);
+          setClearRunsBusy(false);
         }
       });
-  }, [selectedRun, setStatus, refreshRuns]);
+  }, [refreshRuns, setStatus]);
+
+  const onDeleteTaskCenterRun = useCallback(
+    (runId: string) => {
+      const zh = window.zhizhu;
+      if (!zh?.deleteTaskCenterRun) {
+        setStatus("当前客户端不支持删除单条记录，请更新后重试。", "error");
+        return;
+      }
+      if (!confirm("删除本条本机执行记录？")) {
+        return;
+      }
+      void zh
+        .deleteTaskCenterRun({ runId })
+        .then((r) => {
+          if (!panelAliveRef.current) {
+            return;
+          }
+          if (r.ok) {
+            setSelectedRunId((cur) => (cur === runId ? null : cur));
+            setStatus("已删除该条记录。", "info");
+            void refreshRuns();
+          } else {
+            setStatus(r.error, "error");
+          }
+        })
+        .catch((e) => {
+          if (panelAliveRef.current) {
+            setStatus(e instanceof Error ? e.message : String(e), "error");
+          }
+        });
+    },
+    [refreshRuns, setStatus],
+  );
 
   const openRuleFromTask = useCallback(
     (row: Record<string, unknown>) => {
@@ -870,12 +949,13 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
                       ) : null}
                     </td>
                     <td className="p-2">{formatTs(created)}</td>
-                    <td className="p-2">
-                      <div className="flex flex-wrap gap-1">
+                    <td className="p-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="inline-flex max-w-full flex-nowrap items-center gap-1.5">
                         <Button
                           variant="secondary"
                           size="sm"
                           type="button"
+                          className="shrink-0"
                           disabled={cloudListBusy}
                           onClick={() => setSelectedTaskId(id || null)}
                         >
@@ -886,6 +966,7 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
                             variant="secondary"
                             size="sm"
                             type="button"
+                            className="shrink-0"
                             disabled={cloudListBusy}
                             onClick={() => openRuleFromTask(row)}
                           >
@@ -978,16 +1059,30 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
         ) : null}
       </SectionCard>
 
-      <SectionCard title="本机执行记录">
+      <SectionCard
+        title="本机执行记录"
+        actions={
+          <>
+            <Button variant="secondary" size="sm" type="button" disabled={runsLoading} onClick={() => void refreshRuns()}>
+              刷新记录
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              type="button"
+              disabled={runsLoading || clearRunsBusy}
+              isLoading={clearRunsBusy}
+              onClick={onClearTaskCenterRuns}
+            >
+              清空历史记录
+            </Button>
+          </>
+        }
+      >
         <p className="zz-meta-line mb-2">
           汇总 Runner 消费的云端任务结案与「试跑」摘要；关闭「日志」面板后仍可在此查看。点击一行可展开结构化摘要（条数、入库目标、步骤耗时等）。为安全起见本机不落采集原文，列表级数据请在
           Web 控制台对应业务页查看。
         </p>
-        <div className="mb-2">
-          <Button variant="secondary" size="sm" type="button" disabled={runsLoading} onClick={() => void refreshRuns()}>
-            刷新记录
-          </Button>
-        </div>
         {runsError ? <Banner kind="error">{runsError}</Banner> : null}
         <div className="max-h-[360px] overflow-y-auto rounded-lg border border-zz-border">
           <table className="w-full text-left text-xs">
@@ -997,12 +1092,13 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
                 <th className="p-2 font-medium">类型</th>
                 <th className="p-2 font-medium">规则</th>
                 <th className="p-2 font-medium">结果</th>
+                <th className="p-2 font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
               {runs.length === 0 && !runsLoading && !runsError ? (
                 <tr>
-                  <td colSpan={4} className="p-4 text-zz-muted">
+                  <td colSpan={5} className="p-4 text-zz-muted">
                     暂无记录。
                   </td>
                 </tr>
@@ -1016,6 +1112,8 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
                 const rulePrimary = ruleTitle.length > 0 ? ruleTitle : r.rule_id;
                 const ruleSecondary =
                   ruleTitle.length > 0 && r.rule_id.length > 0 ? r.rule_id : null;
+                const canRetryIngest =
+                  r.kind === "trial" && !r.ok && hasTrialIngestStashFlag(r);
                 return (
                   <tr
                     key={`${r.run_id}:${runIdx}`}
@@ -1044,6 +1142,43 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
                       >
                         {r.ok ? "成功" : r.error_code ?? "失败"}
                       </span>
+                    </td>
+                    <td className="p-2 align-top" onClick={(e) => e.stopPropagation()}>
+                      <div className="inline-flex max-w-[min(100%,280px)] flex-wrap items-center gap-1 sm:flex-nowrap">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          type="button"
+                          className="shrink-0"
+                          onClick={() => onOpenAutomationRule(r.rule_id.trim())}
+                        >
+                          编辑
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          type="button"
+                          className="shrink-0"
+                          disabled={!canRetryIngest || retryStashBusy}
+                          title={
+                            canRetryIngest
+                              ? "使用本机保存的入库行再次请求控制台（不重新采集）"
+                              : "仅试跑失败且存在可重试入库侧车时可用"
+                          }
+                          onClick={() => retryTrialIngestForRun(r)}
+                        >
+                          重试
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          type="button"
+                          className="shrink-0"
+                          onClick={() => onDeleteTaskCenterRun(r.run_id)}
+                        >
+                          删除
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 );
