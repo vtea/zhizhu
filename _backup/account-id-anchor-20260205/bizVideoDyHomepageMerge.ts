@@ -30,30 +30,22 @@ function accountRowForMerge(
   });
 }
 
-/** 站内 author.uid（雪崩 id）常见 17～22 位十进制串，与档案「抖音固定账号 ID」列一致时不使用「抖音号」列参与锚定。 */
-function looksLikeSnowflakeUid(s: string): boolean {
-  return /^\d{16,22}$/.test(s);
-}
-
 /**
- * `platform=douyin` 时 **`account_id` 应为抖音固定 ID（与 JSON author.uid 对齐）**。
- * 作者过滤只从该行 **account_id** 推导 `target_author_uid`；**不再**读取档案 `dy_unique_id`（抖音号），
- * 避免号与固定 ID 不一致时抓包作者匹配失败、入库为 0。
- *
- * 若 `account_id` 非数字形态（历史租户 UUID），则从规范化主页 URL 补 `target_dy_unique_id=sec_uid`，
- * 与抓包里 `author.sec_uid` 对齐（仍非档案「抖音号」字段）。
+ * `account_id` 常为租户内 UUID，与抖音 author.uid 不一致；作者过滤需 `target_dy_unique_id`（号）或 `target_author_uid`（数字 uid）。
+ * 库内 `dy_unique_id` 可能是短号或纯数字 uid，按形态写入对应字段，避免详情 JSON 被 awemeAuthorMatches 全部丢弃。
  */
 function supplementTargetAnchorFromHomepageUrl(
   next: Record<string, unknown>,
   row: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  const acc = row ? normalizeBizVideoParamAccountId(row.account_id) : "";
-  if (looksLikeSnowflakeUid(acc)) {
-    return next;
-  }
   const home = typeof next.dy_homepage_url === "string" ? next.dy_homepage_url.trim() : "";
   const sec = home.length > 0 ? extractDouyinUserSecUidFromCanonicalHomepageUrl(home) : "";
   if (!sec) {
+    return next;
+  }
+  const hasRowDyUnique =
+    row != null && typeof row.dy_unique_id === "string" && row.dy_unique_id.trim().length > 0;
+  if (hasRowDyUnique) {
     return next;
   }
   const hasUidAnchor =
@@ -70,18 +62,51 @@ function attachTargetDyUniqueFromRow(
   params: Record<string, unknown>,
   row: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
+  if (!row) {
+    return supplementTargetAnchorFromHomepageUrl({ ...params }, undefined);
+  }
+  /** 常与抖音 author.uid 一致；租户若用 UUID 作 account_id，则不会是纯数字，不会误写入。 */
+  const acc = normalizeBizVideoParamAccountId(row.account_id);
+  const raw = typeof row.dy_unique_id === "string" ? row.dy_unique_id.trim() : "";
   /**
-   * 先清空再写入：任务 params 可能残留其它员工的 target_*；不得以档案「抖音号」覆盖固定 account_id 锚点。
+   * 必须与当前 merge 的 `account_id` 行一致：任务 params 里可能残留「另一员工」的 target_*（甚至两个字段都齐），
+   * 旧逻辑会短路不覆盖，导致作者过滤仍按他人抖音号走。
    */
   const next = { ...params };
-  delete next.target_dy_unique_id;
-  delete next.target_author_uid;
-  if (!row) {
-    return supplementTargetAnchorFromHomepageUrl(next, undefined);
-  }
-  const acc = normalizeBizVideoParamAccountId(row.account_id);
-  if (looksLikeSnowflakeUid(acc)) {
-    next.target_author_uid = acc;
+  /** 站内 author.uid（雪崩 id）常见 17～19 位十进制串；较短纯数字常为「抖音号」展示形态，不能与 uid 混淆。 */
+  const looksLikeSnowflakeUid = (s: string): boolean => /^\d{16,22}$/.test(s);
+  if (raw.length > 0) {
+    if (looksLikeSnowflakeUid(raw) || raw === acc) {
+      delete next.target_dy_unique_id;
+      next.target_author_uid = raw;
+    } else if (/^\d+$/.test(raw)) {
+      /** 短数字抖音号：走 unique_id 比对，并尽量用业务行数字 account_id 对齐 author.uid */
+      delete next.target_author_uid;
+      next.target_dy_unique_id = raw;
+      if (looksLikeSnowflakeUid(acc)) {
+        next.target_author_uid = acc;
+      }
+    } else {
+      delete next.target_author_uid;
+      next.target_dy_unique_id = raw.toLowerCase();
+      /**
+       * PC 主页作品列表里 author 常缺 unique_id（仅有 uid）。短号仍可写 target_dy_unique_id，
+       * 若无 uid 兜底则 awemeAuthorMatches 会整批丢弃。
+       */
+      if (looksLikeSnowflakeUid(acc)) {
+        next.target_author_uid = acc;
+      }
+    }
+  } else {
+    /**
+     * 档案当前行未存 dy_unique_id 时不得以任务 params 残留的 target_*（上一任务草稿/控制台误填）
+     * 继续作者过滤；否则 awemeAuthorMatches 用错误锚点把整个列表判为「不匹配」→ written 恒为 0。
+     */
+    delete next.target_dy_unique_id;
+    delete next.target_author_uid;
+    if (looksLikeSnowflakeUid(acc)) {
+      next.target_author_uid = acc;
+    }
   }
   return supplementTargetAnchorFromHomepageUrl(next, row);
 }

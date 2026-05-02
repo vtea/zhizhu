@@ -70,7 +70,7 @@ test("mergeDyHomepageUrlIntoParams: 档案为 iesdouyin 分享链时合并为 ww
   );
 });
 
-test("mergeDyHomepageUrlIntoParams: 档案抖音号与固定 ID 并存时仅用 account_id 锚定 author.uid（忽略 dy_unique_id）", () => {
+test("mergeDyHomepageUrlIntoParams: 短号 dy_unique_id 同时补 target_author_uid（数字 account_id）", () => {
   const r = mergeDyHomepageUrlIntoParams(
     { limit_n: 5 },
     "7599089618035147825",
@@ -87,7 +87,7 @@ test("mergeDyHomepageUrlIntoParams: 档案抖音号与固定 ID 并存时仅用 
   if (!r.ok) {
     return;
   }
-  assert.equal(r.params.target_dy_unique_id, undefined);
+  assert.equal(r.params.target_dy_unique_id, "39539258450");
   assert.equal(r.params.target_author_uid, "7599089618035147825");
 });
 
@@ -168,7 +168,7 @@ test("buildBizVideoRowsFromCaptures: 规范 URL + 标题 + 作者过滤", () => 
   const rows = buildBizVideoRowsFromCaptures(captures, {
     params: {
       account_id: "7599089618035147825",
-      target_author_uid: "7599089618035147825",
+      target_dy_unique_id: "39539258450",
       limit_n: 5,
     },
   });
@@ -192,7 +192,7 @@ test("buildBizVideoRowsFromCaptures: 作者不匹配则丢弃", () => {
   const rows = buildBizVideoRowsFromCaptures(captures, {
     params: {
       account_id: "7599089618035147825",
-      target_author_uid: "7599089618035147825",
+      target_dy_unique_id: "39539258450",
       limit_n: 5,
     },
   });
@@ -381,12 +381,7 @@ test("tryBuildBizVideoIngestRowsFromSummaryCaptures: 企业分桶 + 部分户缺
         {
           aweme_id: "7634523613215947130",
           desc: "ok-bucket",
-          author: {
-            uid: "7599089618035147825",
-            unique_id: "39539258450",
-            /** 合并主页后仅以 sec_uid（非档案抖音号）锚定 UUID account_id */
-            sec_uid: "MS4wLjABAAAAgood",
-          },
+          author: { uid: "7599089618035147825", unique_id: "39539258450" },
           statistics: { play_count: 1 },
           video: {
             duration: 5000,

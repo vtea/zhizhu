@@ -25,11 +25,11 @@
       },
       "target_dy_unique_id": {
         "type": "string",
-        "description": "可选：作者侧标识（常为 aweme.author.sec_uid / unique_id）；手工任务参数可用。客户端合并主页时若为数字形态「抖音固定账号 ID」仅用 author.uid（target_author_uid），不再从档案抖音号列写入本字段"
+        "description": "可选：目标员工抖音号 unique_id；用于入库前反查并绑定系统 account_id；与 target_author_uid / target_account_id 一并用于作者归属过滤"
       },
       "target_author_uid": {
         "type": "string",
-        "description": "可选：抖音作者 uid（aweme.author.uid）；与 biz_account.account_id（固定 ID）对齐。合并员工档案后以数字形态 account_id 为主锚点启用「仅本人视频」过滤"
+        "description": "可选：抖音作者 uid（aweme.author.uid）；与 account_id 等任填其一即可启用「仅本人视频」过滤"
       },
       "target_account_id": {
         "type": "string",
