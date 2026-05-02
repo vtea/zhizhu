@@ -341,8 +341,11 @@ function validateStep(step: unknown, idx: number): string | null {
             return `steps[${idx}](goto).url 仅支持 http(s) 协议`;
           }
         } catch {
-          /** `{{param}}` 运行时由 Runner 展开后再导航；校验阶段允许非绝对 URL 字面量 */
-          if (/\{\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}\}/.test(urlStr)) {
+          /**
+           * `{{...}}` 运行时由 Runner 展开后再导航；校验阶段允许占位符字面量。
+           * 兼容历史表达（如 `{{dy_homepage_url|https://...}}`）与轻微空白差异，避免已发布规则被误判非法。
+           */
+          if (/\{\{[\s\S]+?\}\}/.test(urlStr)) {
             return null;
           }
           return `steps[${idx}](goto).url 格式无效`;

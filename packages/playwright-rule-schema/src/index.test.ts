@@ -242,6 +242,23 @@ test("validateRuleBody: paginate.wait_capture_key 在 next_button / scroll 两�
   );
 });
 
+test("validateRuleBody: goto.url 支持占位符扩展写法", () => {
+  assert.equal(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [{ type: "goto", url: "{{dy_homepage_url}}" }],
+    }),
+    null,
+  );
+  assert.equal(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [{ type: "goto", url: "{{dy_homepage_url|https://v.douyin.com/demo}}" }],
+    }),
+    null,
+  );
+});
+
 test("createEmptyRuleBody 通过 validate", () => {
   const empty = createEmptyRuleBody();
   empty.steps.push({ type: "wait", ms: 100 });
