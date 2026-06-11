@@ -756,7 +756,6 @@ export function OrganizationSettingsPage() {
                     rows={displayUnits}
                     getRowKey={(r) => r.node.id}
                     emptyText={orgQ.isPending ? "加载中…" : "暂无部门。"}
-                    cardLayoutBelowSm={false}
                   />
                 </div>
               </div>
@@ -790,7 +789,6 @@ export function OrganizationSettingsPage() {
                     rows={members}
                     getRowKey={(r) => r.id}
                     emptyText={orgQ.isPending ? "加载中…" : "暂无成员。"}
-                    cardLayoutBelowSm={false}
                   />
                 </div>
               </div>
@@ -1029,7 +1027,6 @@ export function OrganizationSettingsPage() {
                   rows={enterpriseRows as LeadsEntRow[]}
                   getRowKey={(r) => r.dy_leads_enterprise_id}
                   emptyText={orgQ.isPending ? "加载中…" : "暂无登记；请点击右上角登记。"}
-                  cardLayoutBelowSm={false}
                 />
               </div>
             </div>

@@ -10,7 +10,7 @@
 - `goto`：导航到 path 或 url，可选 `waitUntil`。
 - `setDateRange`：填写日期范围，支持占位符（`{{start_date}}` / `{{end_date}}`）。
 - `clickTab`：按标签名点击页面 tab。
-- `click`：点击给定 selector。
+- `click`：点击给定 selector；可选 `force: true` 绕过浮层遮挡（如 Feelgood 满意度 widget）。
 - `paginate`：翻页 / 滚动。
 - `collectTable`：抓取表格 / 列表 / 卡片到结构化 rows。
 - `captureResponse`：监听 `page.on('response')` 并按 `url_pattern` 抓 JSON 落到 captures。

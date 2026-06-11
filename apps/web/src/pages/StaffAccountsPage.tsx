@@ -7,6 +7,7 @@ import {
   fetchBizAccountAssociationCounts,
   listAccounts,
   listAllAccounts,
+  repointDetachedPlaceholderAccount,
   updateBizAccount,
   type CreateBizAccountBody,
 } from "@/api/accounts";
@@ -17,7 +18,11 @@ import { useTenantId } from "@/hooks/useTenantId";
 import { sameDyLeadsEnterpriseId } from "@/lib/dyLeadsEnterpriseId";
 import { cardPanelTabClass } from "@/lib/segmentPillClass";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
-import { normalizeBizAccountOpsStatusUi, type MockAccount } from "@/mocks/seed";
+import {
+  formatBizAccountAuthStatusUi,
+  normalizeBizAccountOpsStatusUi,
+  type MockAccount,
+} from "@/mocks/seed";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FormEvent, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -57,6 +62,11 @@ export function StaffAccountsPage() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteConfirmDetach, setDeleteConfirmDetach] = useState(false);
   const [deleteDialogErr, setDeleteDialogErr] = useState<string | null>(null);
+  const [repointDialogOpen, setRepointDialogOpen] = useState(false);
+  const [repointTarget, setRepointTarget] = useState<MockAccount | null>(null);
+  const [repointToAccountId, setRepointToAccountId] = useState("");
+  const [repointPassword, setRepointPassword] = useState("");
+  const [repointDialogErr, setRepointDialogErr] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["accounts", tenantId, tab, selectedDyLeadsEnterpriseId ?? null],
@@ -211,6 +221,41 @@ export function StaffAccountsPage() {
     },
   });
 
+  const repointMut = useMutation({
+    mutationFn: (p: { platform: string; placeholderAccountId: string; password: string; to_account_id: string }) =>
+      repointDetachedPlaceholderAccount(tenantId, p.platform, p.placeholderAccountId, {
+        password: p.password,
+        to_account_id: p.to_account_id,
+      }),
+    onSuccess: async () => {
+      setTableActionErr(null);
+      setRepointDialogOpen(false);
+      setRepointTarget(null);
+      setRepointToAccountId("");
+      setRepointPassword("");
+      setRepointDialogErr(null);
+      await qc.invalidateQueries({ queryKey: ["accounts", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["accounts-all", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["accounts-ops-eligible", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["leads-enterprises-visible", tenantId] });
+    },
+    onError: (e) => {
+      setRepointDialogErr(formatApiErrorMessage(e, "迁移失败"));
+    },
+  });
+
+  const repointCandidates = useMemo(() => {
+    if (!repointTarget || !allAccountsQuery.data) {
+      return [];
+    }
+    return allAccountsQuery.data.filter(
+      (a) =>
+        a.platform === repointTarget.platform &&
+        !a.account_id.startsWith("__detached__:") &&
+        sameDyLeadsEnterpriseId(a.dy_leads_enterprise_id ?? "", repointTarget.dy_leads_enterprise_id ?? ""),
+    );
+  }, [repointTarget, allAccountsQuery.data]);
+
   const assocTotal = useMemo(() => {
     const c = assocCountsQuery.data;
     if (!c) {
@@ -294,18 +339,25 @@ export function StaffAccountsPage() {
     },
     { id: "ent", header: "企业主体", cell: (r) => r.dy_leads_enterprise_name ?? r.dy_leads_enterprise_id },
     {
+      id: "auth_status",
+      header: "授权状态",
+      cell: (r) => <span className="text-xs">{formatBizAccountAuthStatusUi(r.auth_status)}</span>,
+    },
+    {
       id: "status",
       header: "运营状态",
       cell: (r) => {
         const st = normalizeBizAccountOpsStatusUi(r.ops_status);
+        const detachedPh = r.account_id.startsWith("__detached__:");
         return api ? (
           <SelectInput
             className="h-8 w-full py-1 text-xs sm:w-auto"
             value={st}
             disabled={
-              patchOpsMut.isPending &&
-              patchOpsMut.variables?.accountId === r.account_id &&
-              patchOpsMut.variables?.platform === r.platform
+              detachedPh ||
+              (patchOpsMut.isPending &&
+                patchOpsMut.variables?.accountId === r.account_id &&
+                patchOpsMut.variables?.platform === r.platform)
             }
             onChange={(ev) => {
               const raw = ev.target.value;
@@ -336,9 +388,38 @@ export function StaffAccountsPage() {
             header: "操作",
             cell: (r: MockAccount) => (
               <div className="flex flex-wrap items-center gap-2">
+                {r.account_id.startsWith("__detached__:") ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    isLoading={
+                      repointMut.isPending &&
+                      repointMut.variables?.placeholderAccountId === r.account_id &&
+                      repointMut.variables?.platform === r.platform
+                    }
+                    onClick={() => {
+                      setFormErr(null);
+                      setTableActionErr(null);
+                      const cand = (allAccountsQuery.data ?? []).filter(
+                        (a) =>
+                          a.platform === r.platform &&
+                          !a.account_id.startsWith("__detached__:") &&
+                          sameDyLeadsEnterpriseId(a.dy_leads_enterprise_id ?? "", r.dy_leads_enterprise_id ?? ""),
+                      );
+                      setRepointTarget(r);
+                      setRepointToAccountId(cand[0]?.account_id ?? "");
+                      setRepointPassword("");
+                      setRepointDialogErr(null);
+                      setRepointDialogOpen(true);
+                    }}
+                  >
+                    迁移占位数据
+                  </Button>
+                ) : null}
                 <Button
                   variant="secondary"
                   size="sm"
+                  disabled={r.account_id.startsWith("__detached__:")}
                   onClick={() => {
                     setFormErr(null);
                     setTableActionErr(null);
@@ -385,7 +466,7 @@ export function StaffAccountsPage() {
       <PageHeader
         title="员工账号管理"
       />
-      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-zz-border-light pb-px">
+      <div className="flex flex-col gap-3 border-b border-zz-border-light pb-px sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
         <div className="flex flex-wrap gap-2" role="tablist" aria-label="账号类型">
           <button
             type="button"
@@ -732,6 +813,126 @@ export function StaffAccountsPage() {
                     setDeletePassword("");
                     setDeleteConfirmDetach(false);
                     setDeleteDialogErr(null);
+                  }}
+                >
+                  取消
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-zz-muted">未选择账号</p>
+          )}
+        </OverlaySectionCard>
+      ) : null}
+
+      {api ? (
+        <OverlaySectionCard
+          open={repointDialogOpen}
+          onClose={() => {
+            if (repointMut.isPending) {
+              return;
+            }
+            setRepointDialogOpen(false);
+            setRepointTarget(null);
+            setRepointToAccountId("");
+            setRepointPassword("");
+            setRepointDialogErr(null);
+          }}
+          title="迁移解绑占位数据"
+          titleAs="h2"
+          className="sm:max-w-lg"
+          description={
+            repointTarget ? (
+              <>
+                占位账号{" "}
+                <span className="font-mono text-zz-near">{repointTarget.account_id}</span>
+                上的线索/视频等待归属到真实抖音号后，Runner 才能再次按账号采集。
+              </>
+            ) : null
+          }
+        >
+          {repointTarget ? (
+            <div className="grid gap-4">
+              <p className="text-sm text-zz-muted">
+                删除员工账号时若勾选了保留业务数据，系统会把引用迁到「已解绑占位」行。请选定同一企业主体下的真实账号承接这些数据；迁移完成后占位行会自动删除。
+              </p>
+              {repointCandidates.length ? (
+                <Field label="目标真实账号（抖音固定 ID）">
+                  {({ id, describedBy }) => (
+                    <SelectInput
+                      id={id}
+                      aria-describedby={describedBy}
+                      className="w-full font-mono text-xs"
+                      value={repointToAccountId}
+                      onChange={(ev) => setRepointToAccountId(ev.target.value)}
+                    >
+                      <option value="">请选择</option>
+                      {repointCandidates.map((a) => (
+                        <option key={a.account_id} value={a.account_id}>
+                          {a.dy_nickname ?? a.account_id} ({a.account_id})
+                        </option>
+                      ))}
+                    </SelectInput>
+                  )}
+                </Field>
+              ) : (
+                <Banner kind="error">
+                  当前主体下没有可承接的真实账号。请先添加企业员工号或个人授权号，再执行迁移。
+                </Banner>
+              )}
+
+              <Field label="登录密码">
+                {({ id, describedBy }) => (
+                  <TextInput
+                    id={id}
+                    aria-describedby={describedBy}
+                    type="password"
+                    autoComplete="current-password"
+                    value={repointPassword}
+                    onChange={(ev) => setRepointPassword(ev.target.value)}
+                  />
+                )}
+              </Field>
+
+              {repointDialogErr ? <Banner kind="error">{repointDialogErr}</Banner> : null}
+
+              <div className="flex flex-wrap gap-2 pt-2">
+                <Button
+                  variant="primary"
+                  size="md"
+                  isLoading={repointMut.isPending}
+                  disabled={
+                    repointMut.isPending ||
+                    !repointPassword.trim() ||
+                    !repointToAccountId.trim() ||
+                    repointCandidates.length === 0
+                  }
+                  onClick={() => {
+                    setRepointDialogErr(null);
+                    if (!repointTarget || !repointToAccountId.trim() || !repointPassword.trim()) {
+                      setRepointDialogErr("请选择目标账号并输入登录密码");
+                      return;
+                    }
+                    repointMut.mutate({
+                      platform: repointTarget.platform,
+                      placeholderAccountId: repointTarget.account_id,
+                      password: repointPassword,
+                      to_account_id: repointToAccountId.trim(),
+                    });
+                  }}
+                >
+                  {repointMut.isPending ? "迁移中…" : "确认迁移并删除占位"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="md"
+                  disabled={repointMut.isPending}
+                  onClick={() => {
+                    setRepointDialogOpen(false);
+                    setRepointTarget(null);
+                    setRepointToAccountId("");
+                    setRepointPassword("");
+                    setRepointDialogErr(null);
                   }}
                 >
                   取消

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "title": "抖音视频同步",
-  "description": "进入主页并抓取列表与详情：① dy_latest_video_payload **仅**累加本人作品列表接口 `/aweme/v1/web/aweme/post/`、`/aweme/v2/web/aweme/post/`（避免与 SEO 混桶）；② `seo/inner/link` 单独写入 dy_seo_inner_link_payload（侧栏/精选/外链推荐，入库侧仅用于 SEO link_data 解析，不参与 deep 扫描）；详情匹配 aweme/detail、note/detail、note/info → dy_video_detail_payload。Runner 按 limit_n 裁剪；客户端规范 URL、按作者锚点过滤；SEO link_type 过滤见入库逻辑。尽量触发作品 Tab、滚动、首条详情；部分步骤 optional。",
+  "description": "进入主页并抓取列表与详情：① dy_latest_video_payload **仅**累加本人作品列表接口 `/aweme/v1/web/aweme/post/`、`/aweme/v2/web/aweme/post/`（避免与 SEO 混桶）；② `seo/inner/link` 单独写入 dy_seo_inner_link_payload（侧栏/精选/外链推荐，入库侧仅用于 SEO link_data 解析，不参与 deep 扫描）；详情匹配 aweme/detail、note/detail、note/info → dy_video_detail_payload。Runner 按 limit_n 裁剪；客户端规范 URL、按作者锚点过滤；SEO link_type 过滤见入库逻辑。尽量触发作品 Tab、滚动、首条详情；多个 wait 步均 optional（accumulate_grow_by:1 + optional 联用）：**没视频 / 接口未触发的户在 12s 后跳过，不阻塞整批**。`paginate.limit_pages=20` 估算约 400 条作品上限；如某户需要更深则在任务 params 覆盖（已在 schema 白名单）。",
   "expects_captures": ["dy_latest_video_payload", "dy_seo_inner_link_payload", "dy_video_detail_payload", "dy_profile_works_count_dom"],
   "steps": [
     {
@@ -56,7 +56,9 @@
       "type": "wait",
       "step_id": "wait_video_payload",
       "response_key": "dy_latest_video_payload",
-      "timeout_ms": 45000
+      "accumulate_grow_by": 1,
+      "optional": true,
+      "timeout_ms": 12000
     },
     {
       "type": "click",
@@ -97,7 +99,7 @@
       "step_id": "scroll_profile_to_load_more_posts",
       "mode": "scroll",
       "scroll_pixels": 2200,
-      "limit_pages": 40,
+      "limit_pages": 20,
       "step_wait_ms": 1200,
       "scroll_capture_wait": "response",
       "scroll_end_if_visible": {
@@ -139,7 +141,7 @@
       "response_key": "dy_video_detail_payload",
       "accumulate_grow_by": 1,
       "optional": true,
-      "timeout_ms": 30000
+      "timeout_ms": 12000
     }
   ]
 }

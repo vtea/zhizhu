@@ -13,7 +13,16 @@ function describeSummary(state: ClientStateDto | null): string {
   if (!state) {
     return "客户端状态：加载中…";
   }
-  const deviceBit = state.deviceId ? `已绑定（${state.deviceId}）` : "未绑定";
+  const hasToken = state.hasDeviceAccessToken === true;
+  const id = state.deviceId?.trim();
+  let deviceBit: string;
+  if (id && hasToken) {
+    deviceBit = `已绑定（${id}）`;
+  } else if (id && !hasToken) {
+    deviceBit = `仅有设备 ID、缺 Runner 凭证（请「设备绑定」重新完成 consume）`;
+  } else {
+    deviceBit = "未绑定";
+  }
   return `当前租户（深链）：${state.effectiveTenantId} · 本机设备：${deviceBit}`;
 }
 

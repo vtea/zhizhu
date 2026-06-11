@@ -1,6 +1,9 @@
 {
   "name": "@zhizhu/web",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -10,10 +13,14 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@zhizhu/biz-account-auth-status": "*",
     "@tanstack/react-query": "^5.74.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.5.2"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "4.60.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.1",

@@ -48,6 +48,8 @@ export function parseTaskRuleDoneLine(j: Record<string, unknown>): TaskRunSummar
 export interface WaitForRunnerTaskRuleChildOptions {
   hardTimeoutMs: number;
   onLogLine: (line: string) => void;
+  /** 解析成功的单行 JSON（含 `event: step` / `ready`） */
+  onStructuredEvent?: (parsed: Record<string, unknown>) => void;
   /** stderr 行前缀（试跑与 RunnerLoop 共用同一约定） */
   stderrLinePrefix?: string;
   /** 与 taskRuleChildRegistry 共用：停止执行时置 `aborted: true` 再 kill，据此返回 USER_CANCELLED。 */
@@ -64,7 +66,7 @@ export function waitForRunnerTaskRuleChildClose(
   child: ChildProcess,
   options: WaitForRunnerTaskRuleChildOptions,
 ): Promise<TaskRunSummary> {
-  const { hardTimeoutMs, onLogLine, userAbortRef } = options;
+  const { hardTimeoutMs, onLogLine, onStructuredEvent, userAbortRef } = options;
   const stderrPrefix = options.stderrLinePrefix ?? "[runner-stderr]";
 
   return new Promise((resolve) => {
@@ -155,6 +157,7 @@ export function waitForRunnerTaskRuleChildClose(
       onLogLine(ln);
       try {
         const j = JSON.parse(ln) as Record<string, unknown>;
+        onStructuredEvent?.(j);
         const parsed = parseTaskRuleDoneLine(j);
         if (parsed) {
           lastDone = parsed;

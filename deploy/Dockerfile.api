@@ -1,0 +1,38 @@
+# 知竹 API — 多阶段构建（仓库根为构建上下文：`docker build -f deploy/Dockerfile.api .`）
+FROM node:22-bookworm-slim AS builder
+WORKDIR /app
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+COPY packages ./packages
+COPY apps ./apps
+
+# 仅安装 @zhizhu/api 及其 workspace 依赖树，避免拉起 client/electron-builder（tar/glob 等弃用警告）
+RUN npm ci -w @zhizhu/api --include-workspace-root \
+  && npm run build -w @zhizhu/playwright-shell-contract \
+  && npm run build -w @zhizhu/playwright-rule-schema \
+  && npm run build -w @zhizhu/biz-account-auth-status \
+  && npm run build -w @zhizhu/api \
+  && npm prune --omit=dev
+
+FROM node:22-bookworm-slim AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/apps/api ./apps/api
+
+EXPOSE 3000
+# 迁移幂等；亦可在 Compose 中改 command 仅启动 index
+CMD ["sh", "-c", "node apps/api/dist/migrate.js && node apps/api/dist/index.js"]

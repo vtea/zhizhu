@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { mergeDyHomepageUrlIntoParams } from "../../client/src/bizVideoDyHomepageMerge.js";
+import { mergeDyHomepageUrlIntoParams, MISSING_DY_HOMEPAGE_MESSAGE } from "../../client/src/bizVideoDyHomepageMerge.js";
 import {
   canonicalizeDouyinUserHomepageUrlSync,
   extractDouyinUserSecUidFromCanonicalHomepageUrl,
@@ -44,6 +44,42 @@ test("canonicalizeDouyinUserHomepageUrlSync: iesdouyin share/user 与 www 主站
     ),
     "https://www.douyin.com/user/MS4wLjABAAAAeMEM-uu1LdQ0h07tbff05-SWzM2mpougsGnS1CDPVPs",
   );
+});
+
+test("mergeDyHomepageUrlIntoParams: 缺主页且档案有行时 message 含账户标识与 account_id", () => {
+  const uid = "7599089618035147999";
+  const r = mergeDyHomepageUrlIntoParams(
+    { limit_n: 5 },
+    uid,
+    [
+      {
+        account_id: uid,
+        dy_nickname: "测试导游A",
+        dy_unique_id: "guide_a",
+      },
+    ],
+    false,
+  );
+  assert.equal(r.ok, false);
+  if (r.ok) {
+    return;
+  }
+  assert.match(r.message, /测试导游A/);
+  assert.match(r.message, new RegExp(uid));
+  assert.match(r.message, /guide_a/);
+  assert.ok(r.message.includes(MISSING_DY_HOMEPAGE_MESSAGE));
+});
+
+test("mergeDyHomepageUrlIntoParams: runner/accounts 未匹配到 account_id 时 message 说明未匹配", () => {
+  const missingId = "7599089618035148888";
+  const r = mergeDyHomepageUrlIntoParams({ limit_n: 5 }, missingId, [], false);
+  assert.equal(r.ok, false);
+  if (r.ok) {
+    return;
+  }
+  assert.match(r.message, /未在 runner\/accounts 列表中匹配/);
+  assert.match(r.message, new RegExp(missingId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.ok(r.message.includes(MISSING_DY_HOMEPAGE_MESSAGE));
 });
 
 test("mergeDyHomepageUrlIntoParams: 档案为 iesdouyin 分享链时合并为 www 主站主页", () => {

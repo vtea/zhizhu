@@ -6,15 +6,24 @@ import { formatApiErrorMessage } from "@/lib/queryError";
 import { useQueryClient } from "@tanstack/react-query";
 import { FormEvent, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { CONSOLE_SIDEBAR_WIDTH_REM, PROFILE_PANEL_WIDTH_REM } from "./sidebarMetrics";
+import { cls } from "@/components/ui/cls";
 
 type SidebarAccountPanelProps = {
   tenantId: string;
   /** `location.pathname`：变化时收起子菜单与个人信息层 */
   pathnameKey: string;
   session: SessionPayload | null;
+  collapsed?: boolean;
+  sidebarWidthRem?: number;
 };
 
-export function SidebarAccountPanel({ tenantId, pathnameKey, session }: SidebarAccountPanelProps) {
+export function SidebarAccountPanel({
+  tenantId,
+  pathnameKey,
+  session,
+  collapsed = false,
+  sidebarWidthRem = CONSOLE_SIDEBAR_WIDTH_REM,
+}: SidebarAccountPanelProps) {
   const queryClient = useQueryClient();
   const api = Boolean(getApiBaseUrl());
   const [menuOpen, setMenuOpen] = useState(false);
@@ -158,10 +167,14 @@ export function SidebarAccountPanel({ tenantId, pathnameKey, session }: SidebarA
         <button
           ref={triggerRef}
           type="button"
-          className="flex w-full items-center gap-2.5 rounded-lg px-1 py-1.5 text-left text-sm outline-none transition-colors hover:bg-white/70 focus-visible:ring-2 focus-visible:ring-zz-blue/40"
+          className={cls(
+            "flex w-full items-center rounded-lg py-1.5 text-left text-sm outline-none transition-colors hover:bg-white/70 focus-visible:ring-2 focus-visible:ring-zz-blue/40",
+            collapsed ? "lg:justify-center lg:px-0 lg:py-1" : "gap-2.5 px-1",
+          )}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-controls={menuOpen ? menuId : undefined}
+          title={labelText}
           onClick={() => setMenuOpen((v) => !v)}
         >
           <span
@@ -170,7 +183,10 @@ export function SidebarAccountPanel({ tenantId, pathnameKey, session }: SidebarA
           >
             {initials}
           </span>
-          <span className="min-w-0 flex-1 truncate font-medium leading-tight text-zz-near" title={labelText}>
+          <span
+            className={cls("min-w-0 flex-1 truncate font-medium leading-tight text-zz-near", collapsed && "lg:hidden")}
+            title={labelText}
+          >
             {labelText}
           </span>
         </button>
@@ -180,7 +196,7 @@ export function SidebarAccountPanel({ tenantId, pathnameKey, session }: SidebarA
             id={menuId}
             role="menu"
             aria-orientation="vertical"
-            className="absolute bottom-0 left-full z-[60] ml-2 min-w-[11rem] rounded-lg border border-zz-border-light bg-zz-white py-1 shadow-lg ring-1 ring-black/[0.06]"
+            className="absolute bottom-full left-0 z-[60] mb-2 min-w-[11rem] rounded-lg border border-zz-border-light bg-zz-white py-1 shadow-lg ring-1 ring-black/[0.06] lg:bottom-0 lg:left-full lg:mb-0 lg:ml-2"
           >
             <button
               type="button"
@@ -225,7 +241,7 @@ export function SidebarAccountPanel({ tenantId, pathnameKey, session }: SidebarA
             }
             style={
               {
-                ["--sidebar-w" as string]: `${CONSOLE_SIDEBAR_WIDTH_REM}rem`,
+                ["--sidebar-w" as string]: `${sidebarWidthRem}rem`,
                 ["--profile-w" as string]: `${PROFILE_PANEL_WIDTH_REM}rem`,
               } as CSSProperties
             }

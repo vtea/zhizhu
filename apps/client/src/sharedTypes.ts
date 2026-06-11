@@ -154,6 +154,72 @@ export type AutomationRuleSyncOutcomeDto =
   | { ok: false; skipped: true; reason: string }
   | { ok: false; skipped: false; status: number; message: string };
 
+/**
+ * 单户增量入库的户级结果（B 套：每户跑完即 POST `/runner/file-rule-ingest`）。
+ * 试跑 `AutomationRuleTrialRunResultDto.summary.account_ingest_results` 与队列任务
+ * PATCH 回写 `result_summary.account_ingest_results` 共用此类型，便于 UI 统一渲染。
+ * `account_display_name` 与 `RunnerOpsAccountDto` / runner/accounts 对齐。
+ */
+export type BizVideoPerAccountIngestResultDto = {
+  account_id: string;
+  /** 员工侧展示名（优先 dy_nickname）；无则省略 */
+  account_display_name?: string;
+  /** 0-based 序号，1-based 在 UI 端格式化时再 +1（与日志行 `账号采集 ${i+1}/${n}` 一致） */
+  index: number;
+  total: number;
+  /** 子进程 task-rule 是否成功（false → 不会触发 POST） */
+  capture_ok: boolean;
+  /** 户级 POST 是否成功（capture_ok=false 时恒为 false） */
+  ingest_ok: boolean;
+  /** 户级推导后准备 POST 的行数（去重 + 合并 Runner 直出 rows 后） */
+  rows_posted: number;
+  /** API 返回写入数；POST 未发生时为 null */
+  written: number | null;
+  /** API 返回跳过数；POST 未发生时为 null */
+  skipped: number | null;
+  /** 户级失败的错误码（capture / ingest 任一） */
+  error_code?: string;
+  /** 户级失败的可读提示（已经过 `augmentRunnerErrorMessageForDisplay`） */
+  error_message?: string;
+  /** 子进程开始到 POST 结束的总耗时（ms） */
+  duration_ms: number;
+  started_at: string;
+  finished_at: string;
+};
+
+/**
+ * 试跑期间的户级进度事件（仅 `enterprise_all_accounts` 多户试跑会推送多次）。
+ * 主进程通过 `webContents.send("automation-rule-trial-progress", payload)` 推送，preload 暴露
+ * `onAutomationRuleTrialProgress` 让 AutomationRulesPanel 实时渲染。
+ */
+export type AutomationRuleTrialAccountProgressDto = {
+  runId: string;
+  /** 0-based */
+  index: number;
+  total: number;
+  accountId: string;
+  /** `runner/accounts` 昵称，便于 UI 主显 */
+  accountName?: string;
+  /** Runner `event=step`：当前规则步 */
+  currentStepId?: string | null;
+  currentStepIndex?: number;
+  stepPhase?: "start" | "ok" | "fail";
+  stepError?: string;
+  /**
+   * - `running`：子进程已 spawn / wait
+   * - `captured`：子进程结束（capture_ok=true）但尚未 POST
+   * - `posting`：正在 POST `/runner/file-rule-ingest`
+   * - `posted`：POST 成功，含 `written / skipped`
+   * - `failed`：capture / ingest 任一失败
+   */
+  phase: "running" | "captured" | "posting" | "posted" | "failed";
+  written?: number;
+  skipped?: number;
+  rowsPosted?: number;
+  durationMs?: number;
+  error?: string;
+};
+
 /** 抖音视频同步结案：主页作品数 DOM 与抓包解析/入库对账摘要 */
 export type BizVideoCoverageSummaryDto = {
   collect_scope: string;
@@ -227,6 +293,11 @@ export type AutomationRuleTrialRunResultDto =
         biz_video_coverage_message_zh?: string;
         biz_video_coverage?: BizVideoCoverageSummaryDto;
         biz_video_coverage_by_account?: Record<string, BizVideoCoverageSummaryDto>;
+        /**
+         * 单户增量入库结果（B 套：循环内每户立即 POST，批末仅做聚合）。
+         * `enterprise_all_accounts` 模式下与 `account_runs` 同长度；单户模式下也会有一条（与原 ingest 等价）。
+         */
+        account_ingest_results?: BizVideoPerAccountIngestResultDto[];
       };
     }
   | { ok: false; error: string; ingestRetry?: AutomationRuleTrialIngestRetryPayload };
@@ -241,6 +312,32 @@ export type AutomationRuleRunnerLoopStatusDto = {
   lastPollErrorStatus: number | null;
   lastPollErrorMessage: string | null;
   currentTaskId: string | null;
+  /**
+   * 仅在 `currentTaskId != null` 且任务为多户 `enterprise_all_accounts` 时存在。
+   * RunnerLoop 在每户 spawn 前 / 子进程 done 后 / POST 完成后增量写入；
+   * UI 通过 GET status 轮询读出实时进度（已与 task-center / TaskCenterPanel 同 polling 频率）。
+   */
+  currentAccountProgress?: {
+    index: number;
+    total: number;
+    accountId: string;
+    accountName?: string;
+    currentStepId?: string | null;
+    currentStepIndex?: number;
+    stepPhase?: "start" | "ok" | "fail";
+    stepError?: string;
+    phase: "running" | "captured" | "posting" | "posted" | "failed";
+    written?: number;
+    skipped?: number;
+    rowsPosted?: number;
+    durationMs?: number;
+    error?: string;
+  } | null;
+  /**
+   * 当前任务已完成的户级结果（按顺序追加）。每个任务开始时清空、结束时一并写入 result_summary.account_ingest_results。
+   * 仅在 `currentTaskId != null` 时有意义；任务结案后清空（结案信息已落盘到 task-center-runs.json）。
+   */
+  currentAccountIngestResults?: BizVideoPerAccountIngestResultDto[];
 };
 
 /** GET /runner/tasks 分页（设备 Bearer） */

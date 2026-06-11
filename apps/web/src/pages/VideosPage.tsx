@@ -1,5 +1,5 @@
 import { DataTable, type DataColumn } from "@/components/DataTable";
-import { VideoCoverImg } from "@/components/VideoCoverImg";
+import { VideoRowOpsCell } from "@/components/VideoRowOpsCell";
 import { PageHeader } from "@/components/PageHeader";
 import { PaginationBar } from "@/components/PaginationBar";
 import { Banner, Button, Field, OverlaySectionCard, SelectInput, TextInput } from "@/components/ui";
@@ -8,15 +8,36 @@ import { parseYmd, ymdDateInputsFromSearchWithStrip } from "@/api/analytics-filt
 import { getApiBaseUrl } from "@/api/env";
 import { ApiError } from "@/api/http";
 import { createAdPlacement } from "@/api/adPlacements";
-import { createVideoOffline, deleteVideo, listVideos, patchVideo, type VideoSortKey } from "@/api/videos";
+import {
+  createVideoOffline,
+  deleteVideo,
+  listVideos,
+  patchVideo,
+  VIDEO_SORT_OPTIONS,
+  type VideoSortKey,
+} from "@/api/videos";
 import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
 import { useStripInvalidAccountSearchParam } from "@/hooks/useStripInvalidAccountSearchParam";
 import { useTenantId } from "@/hooks/useTenantId";
-import { formatDateTime, formatNumber, formatPercent } from "@/lib/format";
+import { formatNumber } from "@/lib/format";
 import { accountFilterSelectValue } from "@/lib/accountFilterSelectValue";
 import { lastPage } from "@/lib/pagination";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
-import { videoPageOpenHref } from "@/lib/videoPageOpenHref";
+import {
+  VIDEO_TABLE_OPS_HEADER_CLASS,
+} from "@/lib/videoTableColumnTheme";
+import {
+  createVideoDataColumns,
+  defaultVideoColumnPrefs,
+  loadVideoColumnPrefs,
+  moveVideoColumn,
+  resolveVideoDataColumns,
+  saveVideoColumnPrefs,
+  toggleVideoColumnHidden,
+  videoAccountCell,
+  VIDEO_COLUMN_LABELS,
+  type VideoColumnPrefs,
+} from "@/lib/videoTableColumns";
 import { normalizeDouyinVideoUrlFromShare } from "@/utils/douyinVideoUrlFromShare";
 import { accountEligibleForOpsBinding, type MockVideo } from "@/mocks/seed";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -135,14 +156,7 @@ function parsePage(raw: string | null): number {
   return Math.floor(n);
 }
 
-const VIDEO_SORT_KEYS = [
-  "publish_desc",
-  "play_desc",
-  "like_desc",
-  "comment_desc",
-  "favorite_desc",
-  "share_desc",
-] as const satisfies readonly VideoSortKey[];
+const VIDEO_SORT_KEYS = VIDEO_SORT_OPTIONS.map((o) => o.value);
 
 function parseSort(raw: string | null): VideoSortKey {
   if (raw && (VIDEO_SORT_KEYS as readonly string[]).includes(raw)) {
@@ -151,151 +165,11 @@ function parseSort(raw: string | null): VideoSortKey {
   return "publish_desc";
 }
 
-function videoAccountCell(r: MockVideo) {
-  const id = String(r.account_id);
-  const name = r.account_display_name?.trim();
-  const primary = name && name.length > 0 ? name : id;
-  const showIdSubline = Boolean(name && name.length > 0 && name !== id);
-  return (
-    <div className="min-w-0">
-      <div className="truncate text-sm text-zz-near">{primary}</div>
-      {showIdSubline ? <div className="truncate font-mono text-xs text-zz-muted">{id}</div> : null}
-    </div>
-  );
-}
-
 const VIDEO_TABLE_CLASS =
-  "table-fixed w-full min-w-[78rem] [&_th]:align-middle [&_td]:align-middle";
+  "w-full sm:w-max sm:min-w-[68rem] table-fixed [&_thead]:normal-case [&_th]:px-2 [&_th]:py-2 [&_th]:text-center [&_td]:px-2 [&_td]:py-2 [&_th]:align-middle [&_td]:align-middle";
+const VIDEO_TABLE_WRAPPER_CLASS = "overflow-x-scroll pb-0.5";
 
-const VIDEO_COLUMNS_BASE: DataColumn<MockVideo>[] = [
-  {
-    id: "cover",
-    header: "封面",
-    className: "w-24 max-w-[5.75rem]",
-    cell: (r) =>
-      r.dy_cover_url ? (
-        <VideoCoverImg url={r.dy_cover_url} alt="" className="h-10 w-[4.5rem] rounded object-cover" />
-      ) : (
-        <div
-          className="flex h-10 w-[4.5rem] shrink-0 items-center justify-center whitespace-nowrap rounded border border-dashed border-zz-border-light bg-zz-snow/80 text-[9px] leading-none text-zz-muted"
-          title="暂无封面"
-        >
-          无封面
-        </div>
-      ),
-  },
-  {
-    id: "title",
-    header: "标题",
-    className: "min-w-0 max-w-[20rem] w-[20rem]",
-    cell: (r) => {
-      const raw = r.dy_title?.trim();
-      const label = raw && raw.length > 0 ? raw : "—";
-      const href = videoPageOpenHref(r.dy_video_url);
-      const spanTitle =
-        raw && raw.length > 0
-          ? href
-            ? raw
-            : `${raw} · 未配置可打开的视频链接`
-          : "未配置可打开的视频链接";
-      if (href) {
-        return (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block min-w-0 max-w-full truncate font-medium text-zz-blue hover:underline"
-            title={raw && raw.length > 0 ? raw : "打开视频页"}
-            aria-label={`在新标签页打开视频：${raw && raw.length > 0 ? raw : r.dy_video_id}`}
-          >
-            {label}
-          </a>
-        );
-      }
-      return (
-        <span className="block min-w-0 max-w-full truncate font-medium" title={spanTitle}>
-          {label}
-        </span>
-      );
-    },
-  },
-  {
-    id: "account",
-    header: "账号",
-    className: "w-52 min-w-[12rem] max-w-[13rem]",
-    cell: (r) => videoAccountCell(r),
-  },
-  {
-    id: "duration",
-    header: "时长(秒)",
-    className: "w-[4.5rem] whitespace-nowrap text-right tabular-nums",
-    cell: (r) => formatNumber(r.dy_duration_sec),
-  },
-  {
-    id: "publish",
-    header: "发布时间",
-    className: "w-40 whitespace-nowrap",
-    cell: (r) =>
-      r.dy_publish_at ? (
-        <span className="tabular-nums">{formatDateTime(r.dy_publish_at)}</span>
-      ) : (
-        <span className="text-xs text-zz-muted">未同步</span>
-      ),
-  },
-  {
-    id: "play",
-    header: "播放量",
-    className: "w-[5.5rem] whitespace-nowrap text-right tabular-nums",
-    cell: (r) => formatNumber(r.dy_play_count),
-  },
-  {
-    id: "like",
-    header: "点赞量",
-    className: "w-[5.5rem] whitespace-nowrap text-right tabular-nums",
-    cell: (r) => formatNumber(r.dy_like_count),
-  },
-  {
-    id: "comment",
-    header: "评论量",
-    className: "w-[5.5rem] whitespace-nowrap text-right tabular-nums",
-    cell: (r) => formatNumber(r.dy_comment_count),
-  },
-  {
-    id: "favorite",
-    header: "收藏量",
-    className: "w-[5.5rem] whitespace-nowrap text-right tabular-nums",
-    cell: (r) => formatNumber(r.dy_favorite_count),
-  },
-  {
-    id: "share",
-    header: "分享量",
-    className: "w-[5.5rem] whitespace-nowrap text-right tabular-nums",
-    cell: (r) => formatNumber(r.dy_share_count),
-  },
-  {
-    id: "complete",
-    header: "完播率",
-    className: "w-[4.5rem] whitespace-nowrap text-right",
-    cell: (r) => formatPercent(r.dy_completion_rate),
-  },
-  {
-    id: "lead",
-    header: "线索量",
-    className: "w-[5rem] whitespace-nowrap text-right tabular-nums",
-    cell: (r) => formatNumber(r.dy_lead_count),
-  },
-  {
-    id: "sync",
-    header: "指标同步",
-    className: "w-40 whitespace-nowrap",
-    cell: (r) =>
-      r.metric_synced_at ? (
-        <span className="tabular-nums">{formatDateTime(r.metric_synced_at)}</span>
-      ) : (
-        <span className="text-xs text-zz-muted">未同步</span>
-      ),
-  },
-];
+const VIDEO_DATA_COLUMNS = createVideoDataColumns();
 
 export function VideosPage() {
   const tenantId = useTenantId();
@@ -340,6 +214,13 @@ export function VideosPage() {
   const [placementSpend, setPlacementSpend] = useState("");
   const [placementErr, setPlacementErr] = useState<string | null>(null);
   const [placementFlash, setPlacementFlash] = useState<string | null>(null);
+  const [columnPrefs, setColumnPrefs] = useState<VideoColumnPrefs>(() => defaultVideoColumnPrefs());
+  const [columnPrefsOpen, setColumnPrefsOpen] = useState(false);
+  const [columnPrefsDraft, setColumnPrefsDraft] = useState<VideoColumnPrefs>(() => defaultVideoColumnPrefs());
+
+  useEffect(() => {
+    setColumnPrefs(loadVideoColumnPrefs(tenantId));
+  }, [tenantId]);
 
   useEffect(() => {
     const { from, to, nextSearch } = ymdDateInputsFromSearchWithStrip(search);
@@ -618,6 +499,7 @@ export function VideosPage() {
     onMutate: () => setPlacementErr(null),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["ad-placements", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["videos", tenantId] });
       setPlacementVideo(null);
       setPlacementSpend("");
       setPlacementErr(null);
@@ -652,20 +534,22 @@ export function VideosPage() {
           {
             id: "select",
             header: (
-              <SelectAllCheckbox
-                checked={allOnPageSelected}
-                indeterminate={someOnPageSelected && !allOnPageSelected}
-                onChange={() => {
-                  if (allOnPageSelected) {
-                    toggleSelectAllOnPage(false);
-                  } else {
-                    toggleSelectAllOnPage(true);
-                  }
-                }}
-              />
+              <div className="flex w-full justify-center">
+                <SelectAllCheckbox
+                  checked={allOnPageSelected}
+                  indeterminate={someOnPageSelected && !allOnPageSelected}
+                  onChange={() => {
+                    if (allOnPageSelected) {
+                      toggleSelectAllOnPage(false);
+                    } else {
+                      toggleSelectAllOnPage(true);
+                    }
+                  }}
+                />
+              </div>
             ),
             stackLabel: "选择",
-            className: "w-12 max-w-[3.25rem] text-center align-middle",
+            className: "w-10 max-w-[2.75rem] px-1 text-center align-middle",
             cell: (r) => (
               <input
                 type="checkbox"
@@ -680,24 +564,44 @@ export function VideosPage() {
         ]
       : [];
 
+    const dataCols = resolveVideoDataColumns(VIDEO_DATA_COLUMNS, columnPrefs);
     if (!apiBase) {
-      return VIDEO_COLUMNS_BASE;
+      return dataCols;
     }
     const ops: DataColumn<MockVideo>[] = [
       {
         id: "ops",
-        header: "操作",
-        className: "min-w-[15rem] w-[15rem]",
+        header: (
+          <span
+            className={`inline-block w-full text-center text-xs font-semibold normal-case tracking-normal ${VIDEO_TABLE_OPS_HEADER_CLASS}`}
+          >
+            操作
+          </span>
+        ),
+        stackLabel: "操作",
+        sticky: "right",
+        className: "w-[6.5rem] min-w-[6.5rem] max-w-[6.5rem] overflow-visible px-1 text-center align-middle",
         cell: (r) => {
           const accRow = accountsQuery.data?.find((a) => String(a.account_id) === String(r.account_id));
           const placementOpsOk = accRow == null ? true : accountEligibleForOpsBinding(accRow);
+          const deletePending =
+            delMut.isPending &&
+            delMut.variables?.dy_video_id === r.dy_video_id &&
+            delMut.variables?.platform === r.platform;
           return (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={bulkDelMut.isPending || createPlacementMut.isPending}
-              onClick={() => {
+            <VideoRowOpsCell
+              placementOpsOk={placementOpsOk}
+              placementDisabledTitle={VIDEO_PLACEMENT_OPS_DISABLED_TITLE}
+              actionsDisabled={bulkDelMut.isPending || createPlacementMut.isPending}
+              placementPending={createPlacementMut.isPending}
+              deletePending={deletePending}
+              onPlacement={() => {
+                setPlacementErr(null);
+                setPlacementSpend("");
+                setEditVideo(null);
+                setPlacementVideo(r);
+              }}
+              onEdit={() => {
                 setVideoMutErr(null);
                 setPlacementVideo(null);
                 setPlacementSpend("");
@@ -716,7 +620,9 @@ export function VideosPage() {
                   r.dy_like_count != null && Number.isFinite(Number(r.dy_like_count)) ? String(r.dy_like_count) : "",
                 );
                 setEditCommentCount(
-                  r.dy_comment_count != null && Number.isFinite(Number(r.dy_comment_count)) ? String(r.dy_comment_count) : "",
+                  r.dy_comment_count != null && Number.isFinite(Number(r.dy_comment_count))
+                    ? String(r.dy_comment_count)
+                    : "",
                 );
                 setEditFavoriteCount(
                   r.dy_favorite_count != null && Number.isFinite(Number(r.dy_favorite_count))
@@ -736,55 +642,22 @@ export function VideosPage() {
                 );
                 setEditMetricSynced(isoToDatetimeLocalValue(r.metric_synced_at));
               }}
-            >
-              编辑元数据
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              title={placementOpsOk ? undefined : VIDEO_PLACEMENT_OPS_DISABLED_TITLE}
-              disabled={
-                bulkDelMut.isPending ||
-                !placementOpsOk ||
-                createPlacementMut.isPending
-              }
-              onClick={() => {
-                setPlacementErr(null);
-                setPlacementSpend("");
-                setEditVideo(null);
-                setPlacementVideo(r);
-              }}
-            >
-              投放
-            </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              disabled={
-                bulkDelMut.isPending ||
-                createPlacementMut.isPending ||
-                (delMut.isPending &&
-                  delMut.variables?.dy_video_id === r.dy_video_id &&
-                  delMut.variables?.platform === r.platform)
-              }
-              onClick={() => {
+              onDelete={() => {
                 if (confirm(`删除视频 ${r.dy_video_id}？若有投放关联将失败。`)) {
                   delMut.mutate({ platform: r.platform, dy_video_id: r.dy_video_id });
                 }
               }}
-            >
-              删除
-            </Button>
-          </div>
+            />
           );
         },
       },
     ];
-    return [...selectCol, ...VIDEO_COLUMNS_BASE, ...ops];
+    return [...selectCol, ...dataCols, ...ops];
   }, [
     accountsQuery.data,
     apiBase,
     allOnPageSelected,
+    columnPrefs,
     someOnPageSelected,
     bulkDelMut.isPending,
     createPlacementMut.isPending,
@@ -793,6 +666,21 @@ export function VideosPage() {
     toggleRowSelected,
     toggleSelectAllOnPage,
   ]);
+
+  function openColumnPrefsModal() {
+    setColumnPrefsDraft(columnPrefs);
+    setColumnPrefsOpen(true);
+  }
+
+  function saveColumnPrefsFromDraft() {
+    const normalized = {
+      order: [...columnPrefsDraft.order],
+      hidden: [...columnPrefsDraft.hidden],
+    };
+    saveVideoColumnPrefs(tenantId, normalized);
+    setColumnPrefs(normalized);
+    setColumnPrefsOpen(false);
+  }
 
   function setAccountId(next: string) {
     const sp = new URLSearchParams(search);
@@ -951,15 +839,17 @@ export function VideosPage() {
                 value={sort}
                 onChange={(ev) => setSort(parseSort(ev.target.value))}
               >
-                <option value="publish_desc">发布时间降序</option>
-                <option value="play_desc">播放量降序</option>
-                <option value="like_desc">点赞量降序</option>
-                <option value="comment_desc">评论量降序</option>
-                <option value="favorite_desc">收藏量降序</option>
-                <option value="share_desc">分享量降序</option>
+                {VIDEO_SORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </SelectInput>
             )}
           </Field>
+          <Button variant="secondary" size="sm" className="shrink-0 sm:self-end" onClick={openColumnPrefsModal}>
+            列设置
+          </Button>
         </div>
         <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-2 sm:self-end">
           <Button variant="secondary" size="sm" onClick={openAddModal}>
@@ -985,6 +875,84 @@ export function VideosPage() {
           ) : null}
         </div>
       </div>
+      <OverlaySectionCard
+        open={columnPrefsOpen}
+        onClose={() => setColumnPrefsOpen(false)}
+        title="表格列设置"
+        titleAs="h2"
+        description="调整列显示顺序与可见性；设置按当前租户保存在本浏览器，不影响其他用户。"
+      >
+        <ul className="mt-3 space-y-2">
+          {columnPrefsDraft.order.map((id, idx) => {
+            const visible = !columnPrefsDraft.hidden.includes(id);
+            const visibleCount = columnPrefsDraft.order.length - columnPrefsDraft.hidden.length;
+            return (
+              <li
+                key={id}
+                className="flex flex-wrap items-center gap-2 rounded-lg border border-zz-border-light bg-zz-surface-muted/30 px-3 py-2"
+              >
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 shrink-0 rounded border-zz-border text-zz-blue focus:ring-2 focus:ring-zz-blue/30"
+                  checked={visible}
+                  disabled={visible && visibleCount <= 1}
+                  onChange={(ev) => {
+                    setColumnPrefsDraft((prev) => ({
+                      ...prev,
+                      hidden: toggleVideoColumnHidden(prev.hidden, id, ev.target.checked),
+                    }));
+                  }}
+                  aria-label={`显示列：${VIDEO_COLUMN_LABELS[id]}`}
+                />
+                <span className="min-w-0 flex-1 text-sm text-zz-near">{VIDEO_COLUMN_LABELS[id]}</span>
+                <div className="flex shrink-0 gap-1">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={idx === 0}
+                    onClick={() => {
+                      setColumnPrefsDraft((prev) => ({
+                        ...prev,
+                        order: moveVideoColumn(prev.order, id, -1),
+                      }));
+                    }}
+                  >
+                    上移
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={idx === columnPrefsDraft.order.length - 1}
+                    onClick={() => {
+                      setColumnPrefsDraft((prev) => ({
+                        ...prev,
+                        order: moveVideoColumn(prev.order, id, 1),
+                      }));
+                    }}
+                  >
+                    下移
+                  </Button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="mt-5 flex flex-wrap gap-2 border-t border-zz-border-light pt-4">
+          <Button variant="primary" size="md" onClick={saveColumnPrefsFromDraft}>
+            保存
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => setColumnPrefsDraft(defaultVideoColumnPrefs())}
+          >
+            恢复默认
+          </Button>
+          <Button variant="secondary" size="md" onClick={() => setColumnPrefsOpen(false)}>
+            取消
+          </Button>
+        </div>
+      </OverlaySectionCard>
       <OverlaySectionCard
         open={addModalOpen}
         onClose={() => setAddModalOpen(false)}
@@ -1529,6 +1497,7 @@ export function VideosPage() {
         getRowKey={(r) => r.id}
         emptyText={videosQuery.isPending ? "加载中…" : "暂无视频数据"}
         tableClassName={VIDEO_TABLE_CLASS}
+        wrapperClassName={VIDEO_TABLE_WRAPPER_CLASS}
       />
       {videosQuery.data && videosQuery.data.total > 0 ? (
         <PaginationBar

@@ -73,7 +73,7 @@ export type PutResult =
   | { ok: true; item: AutomationRuleDeviceDraftRow }
   | { ok: false; error: string; httpStatus?: 400 | 409 | 413 };
 
-export type DeleteResult = { ok: true } | { ok: false; error: string; httpStatus?: 404 };
+export type DeleteResult = { ok: true } | { ok: false; error: string; httpStatus?: 400 | 404 };
 
 export async function listDeviceDraftsForDevice(
   tenantId: string,

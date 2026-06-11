@@ -26,6 +26,8 @@ import { Link, useSearchParams } from "react-router-dom";
 
 const PAGE_SIZE = 10;
 
+const DEFAULT_PLACEMENT_STATUS = "投放中";
+
 /** 写入 biz_ad_placement.placement_status 的规范取值 */
 const PLACEMENT_STATUS_OPTIONS = ["投放中", "停止投放", "需要复盘"] as const;
 
@@ -148,7 +150,7 @@ export function AdPlacementsPage() {
     setPreFav("");
     setPreShare("");
     setIsCurrent(false);
-    setPlacementStatus("");
+    setPlacementStatus(DEFAULT_PLACEMENT_STATUS);
     setFormErr(null);
     setPlacementFormOpen(false);
     setMetricsHint(null);
@@ -165,7 +167,7 @@ export function AdPlacementsPage() {
     setPreFav("");
     setPreShare("");
     setIsCurrent(false);
-    setPlacementStatus("");
+    setPlacementStatus(DEFAULT_PLACEMENT_STATUS);
     setFormErr(null);
     setMetricsHint(null);
   }
@@ -279,10 +281,11 @@ export function AdPlacementsPage() {
   }
 
   const columns: DataColumn<AdPlacementRow>[] = [
-    { id: "ad_date", header: "投放日", cell: (r) => r.ad_date },
+    { id: "ad_date", header: "投放日", stackLabel: "投放日", cell: (r) => r.ad_date },
     {
       id: "video",
       header: "视频名称",
+      stackLabel: "视频名称",
       cell: (r) => {
         const { full, shown } = clipVideoNameCell(r);
         return (

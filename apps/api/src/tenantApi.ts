@@ -5,6 +5,7 @@ import {
   normEmail,
   normUsername,
 } from "./consoleAuth.js";
+import { applyPlacementStatusAutoTransition } from "./adPlacementStatus.js";
 import { getPool, messageForBusinessError, poolQuery } from "./db.js";
 import {
   sqlDyLeadsEnterpriseIdEqParam,
@@ -86,6 +87,7 @@ export async function listAccounts(
          a.dy_leads_enterprise_id, a.dy_leads_enterprise_name,
          a.dy_display_name AS dy_nickname, a.dy_unique_id,
          a.dy_user_url AS dy_user_url,
+         COALESCE(NULLIF(btrim(COALESCE(a.auth_status::text, '')), ''), 'active') AS auth_status,
          CASE
            WHEN lower(btrim(COALESCE(a.ops_status, ''))) = 'paused' THEN 'paused'
            WHEN lower(btrim(COALESCE(a.ops_status, ''))) = 'revoked' THEN 'revoked'
@@ -125,6 +127,14 @@ export async function listVideos(
   scope: EnterpriseScopeFilter = { kind: "all" },
 ): Promise<{ items: Record<string, unknown>[]; total: number; page: number; pageSize: number } | DbError> {
   const offset = (page - 1) * pageSize;
+  try {
+    await applyPlacementStatusAutoTransition(tenantId);
+  } catch (e) {
+    if (isMissingTable(e)) {
+      return { error: "表不存在，请在 apps/api 执行: npm run migrate", code: "42P01" };
+    }
+    return { error: messageForBusinessError(e) };
+  }
   const params: unknown[] = [tenantId];
   const wh: string[] = ["v.tenant_id = $1"];
   let n = 2;
@@ -167,6 +177,12 @@ export async function listVideos(
     comment_desc: "v.dy_comment_count DESC NULLS LAST, v.id",
     favorite_desc: "v.dy_favorite_count DESC NULLS LAST, v.id",
     share_desc: "v.dy_share_count DESC NULLS LAST, v.id",
+    duration_desc: "v.dy_duration_sec DESC NULLS LAST, v.id",
+    complete_desc: "v.dy_completion_rate DESC NULLS LAST, v.id",
+    lead_desc: "v.dy_lead_count DESC NULLS LAST, v.id",
+    placement_status_asc: "ap.placement_status ASC NULLS LAST, v.id",
+    placement_status_desc: "ap.placement_status DESC NULLS LAST, v.id",
+    sync_desc: "v.metric_synced_at DESC NULLS LAST, v.id",
   };
   const order = orderBySort[opts.sort] ?? orderBySort.publish_desc;
   try {
@@ -182,10 +198,21 @@ export async function listVideos(
               v.dy_play_count, v.dy_like_count, v.dy_comment_count, v.dy_favorite_count, v.dy_share_count,
               v.dy_completion_rate, v.dy_lead_count,
               v.metric_synced_at::text AS metric_synced_at,
-              COALESCE(a.dy_display_name, v.account_id) AS account_display_name
+              COALESCE(a.dy_display_name, v.account_id) AS account_display_name,
+              ap.placement_status
        FROM biz_video v
        LEFT JOIN biz_account a
          ON a.tenant_id = v.tenant_id AND a.platform = v.platform AND a.account_id = v.account_id
+       LEFT JOIN LATERAL (
+         SELECT p.placement_status
+         FROM biz_ad_placement p
+         WHERE p.tenant_id = v.tenant_id
+           AND p.platform = v.platform
+           AND p.dy_video_id = v.dy_video_id
+         ORDER BY (CASE WHEN p.is_current THEN 0 ELSE 1 END),
+                  p.ad_date DESC, p.created_at DESC
+         LIMIT 1
+       ) ap ON true
        ${where}
        ORDER BY ${order}
        LIMIT ${lim} OFFSET ${off}`,
@@ -497,6 +524,7 @@ export async function listAdPlacements(
 ): Promise<{ items: Record<string, unknown>[]; total: number; page: number; pageSize: number } | DbError> {
   const offset = (page - 1) * pageSize;
   try {
+    await applyPlacementStatusAutoTransition(tenantId);
     let countParams: unknown[] = [tenantId];
     let where = "WHERE p.tenant_id = $1";
     let listParams: unknown[] = [tenantId];

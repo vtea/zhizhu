@@ -42,7 +42,7 @@ export function SystemSettingsLayout() {
         title="系统设置"
       />
       <nav className="mb-6" aria-label="系统设置子页">
-        <ul className="m-0 flex list-none flex-wrap gap-2 p-0">
+        <ul className="m-0 flex list-none flex-col gap-2 p-0 sm:flex-row sm:flex-wrap">
           {tabs.map((t) => {
             const isActive = subPath === t.path;
             return (

@@ -46,6 +46,11 @@
     },
     {
       "type": "wait",
+      "step_id": "wait_page_shell_settle",
+      "ms": 500
+    },
+    {
+      "type": "wait",
       "step_id": "wait_account_context",
       "response_key": "employee_account_context",
       "timeout_ms": 45000
@@ -105,6 +110,25 @@
       }
     },
     {
+      "type": "wait",
+      "step_id": "wait_after_open_page_size_dropdown",
+      "ms": 350
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_page_size_popover_wlz",
+      "selector": {
+        "kind": "css",
+        "value": ".leads-select-popover-panel-inner .leads-select-option:has-text('50条/页'):visible",
+        "fallbacks": [
+          { "kind": "css", "value": ".leads-select-popover-panel .leads-select-option:has-text('50条/页'):visible" },
+          { "kind": "css", "value": ".leads-popover:visible .leads-select-option:has-text('50条/页')" },
+          { "kind": "css", "value": ".leads-select-option:has-text('50条/页'):visible" }
+        ]
+      },
+      "timeout_ms": 8000
+    },
+    {
       "type": "click",
       "step_id": "pick_page_size_50",
       "selector": {
@@ -120,9 +144,14 @@
     },
     {
       "type": "wait",
+      "step_id": "wait_after_pick_page_size_wlz",
+      "ms": 800
+    },
+    {
+      "type": "wait",
       "step_id": "wait_wlz_50_per_page",
       "response_key": "high_dive_wlz_payload",
-      "timeout_ms": 30000
+      "timeout_ms": 45000
     },
     {
       "type": "click",
@@ -144,6 +173,11 @@
       "timeout_ms": 30000
     },
     {
+      "type": "clearCaptureAccumulate",
+      "step_id": "clear_ylz_before_page_size_50",
+      "keys": ["high_dive_ylz_payload"]
+    },
+    {
       "type": "click",
       "step_id": "open_page_size_dropdown_ylz",
       "selector": {
@@ -155,6 +189,25 @@
           { "kind": "css", "value": ".leads-Table-Pagination .leads-select-input" }
         ]
       }
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_after_open_page_size_dropdown_ylz",
+      "ms": 350
+    },
+    {
+      "type": "wait",
+      "step_id": "wait_page_size_popover_ylz",
+      "selector": {
+        "kind": "css",
+        "value": ".leads-select-popover-panel-inner .leads-select-option:has-text('50条/页'):visible",
+        "fallbacks": [
+          { "kind": "css", "value": ".leads-select-popover-panel .leads-select-option:has-text('50条/页'):visible" },
+          { "kind": "css", "value": ".leads-popover:visible .leads-select-option:has-text('50条/页')" },
+          { "kind": "css", "value": ".leads-select-option:has-text('50条/页'):visible" }
+        ]
+      },
+      "timeout_ms": 8000
     },
     {
       "type": "click",
@@ -172,10 +225,14 @@
     },
     {
       "type": "wait",
+      "step_id": "wait_after_pick_page_size_ylz",
+      "ms": 800
+    },
+    {
+      "type": "wait",
       "step_id": "wait_ylz_50_per_page",
       "response_key": "high_dive_ylz_payload",
-      "accumulate_grow_by": 1,
-      "timeout_ms": 30000
+      "timeout_ms": 45000
     },
     {
       "type": "paginate",

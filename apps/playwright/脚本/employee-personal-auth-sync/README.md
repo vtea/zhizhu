@@ -26,3 +26,11 @@
 ## 后续增强
 
 - 分页拉全量、字段标准化可在 `collectTable` / 映射层继续加。
+
+## 附录：授权状态字段与代码常量
+
+列表接口 `perms/confer/list` 返回的用户对象上，授权态可能在 `status`、`confer_status`、`confer_info.status`、`is_revoked`（含 0/1）等字段；归一化逻辑集中在 npm 包 **`@zhizhu/biz-account-auth-status`**（常量 `DOUYIN_CONFER_LEGACY_REVOKED_STRINGS` 等）。
+
+抓包后若枚举与常量不一致，请同时改该包并 `npm run build -w @zhizhu/biz-account-auth-status`，客户端与 API 均依赖此包。
+
+调试客户端组行时可设环境变量 **`ZHIZHU_DEBUG_CONFER_AUTH_STATUS=1`** 查看每行 `picked` 与归一化结果。

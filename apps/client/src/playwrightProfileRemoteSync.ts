@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { App } from "electron";
 import { readClientState } from "./clientState";
 import { getApiBaseUrl } from "./config";
+import { describeRunnerApiContextBlocker } from "./runnerApiContext";
 import { getDefaultPlaywrightProfileId, listPlaywrightProfiles } from "./playwrightBrowserProfiles";
 
 const SYNC_HTTP_TIMEOUT_MS = 28_000;
@@ -140,17 +141,14 @@ function captureSyncOutcomeAsStatus(app: App, outcome: SyncOutcome): void {
  * 返回结构化结果，方便上层 IPC / UI 与状态文件共用同一份事实。
  */
 export async function syncPlaywrightShellProfilesToApi(app: App): Promise<SyncOutcome> {
+  const blocker = describeRunnerApiContextBlocker(app);
+  if (blocker) {
+    return { ok: false as const, skipped: true, reason: blocker };
+  }
   const st = readClientState(app);
   const token = typeof st.deviceAccessToken === "string" ? st.deviceAccessToken.trim() : "";
   const tenantId = typeof st.tenantId === "string" ? st.tenantId.trim().toLowerCase() : "";
-  const deviceId = typeof st.deviceId === "string" ? st.deviceId.trim() : "";
-  if (!token || !tenantId || !deviceId) {
-    return { ok: false as const, skipped: true, reason: "未绑定设备或缺 Runner 凭证；请先在「设备绑定」页绑定。" };
-  }
   const apiRoot = getApiBaseUrl().trim();
-  if (!apiRoot) {
-    return { ok: false as const, skipped: true, reason: "未配置 ZHIZHU_API_BASE_URL，无法上行同步。" };
-  }
   const root = apiRoot.replace(/\/?$/, "/");
   let url = "";
   try {

@@ -21,6 +21,7 @@ import { RuleError } from "./errors";
 import { buildCaptureDiagnostics } from "./captureDiagnostics";
 import { CaptureBucket, registerCapture } from "./capture";
 import { buildLocator, describe, isAnySelectorVisible, resolveLocator, waitForLocator } from "./selectors";
+import { clickErrorSuggestsPointerIntercept, dismissLeadsOverlays } from "./dismissLeadsOverlays";
 import { isTransientNetNavError, sleepMs } from "./transientNavErrors";
 
 /**
@@ -565,10 +566,21 @@ async function executeStep(
         throw e;
       }
       const times = step.times ?? 1;
+      const useForce = step.force === true;
       for (let i = 0; i < times; i++) {
+        await dismissLeadsOverlays(page);
         try {
-          await loc.first().click({ timeout: locTimeout });
+          await loc.first().click({ timeout: locTimeout, force: useForce });
         } catch (e) {
+          if (!useForce && clickErrorSuggestsPointerIntercept(e)) {
+            await dismissLeadsOverlays(page);
+            try {
+              await loc.first().click({ timeout: locTimeout, force: true });
+              continue;
+            } catch (retryErr) {
+              e = retryErr;
+            }
+          }
           if (step.optional === true) {
             return;
           }

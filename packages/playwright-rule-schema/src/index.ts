@@ -8,7 +8,7 @@
  *   解释器在运行时统一替换；未替换的占位符抛错。
  *
  * 步骤集合 v1（够覆盖立项 §4.1.1「线索 + 视频」MVP）：
- * - abortIfVisible, goto, setDateRange, clickTab, click, paginate, collectTable, captureResponse, captureDomAssign, wait, clearCaptureAccumulate
+ * - abortIfVisible, goto, setDateRange, clickTab, click（可选 force）, paginate, collectTable, captureResponse, captureDomAssign, wait, clearCaptureAccumulate
  *
  * `validateRuleBody(body)`：返回 `null` 表示通过；返回 `string` 表示首个错误信息（中文友好）。
  * 该函数被客户端 IPC、Runner、API 上传路径同时使用。
@@ -91,6 +91,8 @@ export type ClickStep = {
   times?: number;
   /** 为 true 时：等候/点击失败不中断规则（用于「可能有第 2 页」） */
   optional?: boolean;
+  /** 为 true 时：绕过 actionability（如浮层 intercepts pointer events） */
+  force?: boolean;
 };
 
 export type PaginateStep = {
@@ -430,6 +432,9 @@ function validateStep(step: unknown, idx: number): string | null {
       }
       if (step.optional !== undefined && typeof step.optional !== "boolean") {
         return `steps[${idx}](click).optional 须为 boolean`;
+      }
+      if (step.force !== undefined && typeof step.force !== "boolean") {
+        return `steps[${idx}](click).force 须为 boolean`;
       }
       return null;
     }

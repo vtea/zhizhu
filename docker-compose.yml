@@ -1,0 +1,109 @@
+# 知竹生产编排：PostgreSQL + API + Nginx(Web 同源反代)
+#
+# 快速启动（推荐）：
+#   npm run deploy:prod
+#   bash deploy/deploy.sh --domain https://console.example.com --rebuild
+#
+# 手动：
+#   cp .env.docker.example .env   # 或 npm run bootstrap:env 后补 JWT_* / PUBLIC_ORIGIN
+#   docker compose build && docker compose up -d
+#   curl -fsS http://127.0.0.1:${WEB_HOST_PORT:-8080}/health
+#
+# 外置 RDS：见 deploy/docker-compose.external-db.yml.example
+# 详细说明：docs/部署指南.md
+
+name: zhizhu
+
+services:
+  postgres:
+    profiles: ["bundled-db"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zhizhu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhizhu}
+      POSTGRES_DB: ${POSTGRES_DB:-zhizhu}
+    volumes:
+      - zhizhu_pg:/var/lib/postgresql/data
+    networks:
+      - zhizhu
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-zhizhu} -d ${POSTGRES_DB:-zhizhu}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.api
+    image: vtea/zzapi
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      API_LISTEN_HOST: "0.0.0.0"
+      PORT: "3000"
+      ZHIZHU_VIDEO_COVER_STORAGE: /data/zhizhu/video-covers
+    # 数据库连接仅来自 env_file（PG* 或 DATABASE_URL）；勿在此写死，避免盖掉外置 RDS
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    volumes:
+      - zhizhu_video_covers:/data/zhizhu/video-covers
+    networks:
+      - zhizhu
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    # 排障：取消下行注释可在宿主机直连 API（生产建议保持关闭，仅经 web 反代）
+    # ports:
+    #   - "${API_HOST_PORT:-3000}:3000"
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost:8080}
+        VITE_CONSOLE_PUBLIC_REGISTER: ${VITE_CONSOLE_PUBLIC_REGISTER:-false}
+    image: vtea/zzweb
+    restart: unless-stopped
+    ports:
+      - "${WEB_HOST_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - zhizhu
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+networks:
+  zhizhu:
+    driver: bridge
+
+volumes:
+  zhizhu_pg:
+  zhizhu_video_covers:

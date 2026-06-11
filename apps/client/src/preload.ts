@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type {
   ApiReachSnapshot,
   AutomationRuleListDto,
+  AutomationRuleTrialAccountProgressDto,
   AutomationRuleTrialIngestRetryPayload,
   AutomationRuleRunnerLoopStatusDto,
   AutomationRuleSyncOutcomeDto,
@@ -194,6 +195,13 @@ export type ZhizhuClientApi = {
   onRequestToggleClientLog: (handler: () => void) => void;
   /** 主进程托盘 / 菜单切到指定 tab（如 "automation-rules"），由渲染进程注册回调 */
   onRequestTab: (handler: (tabId: string) => void) => void;
+  /**
+   * B 套：订阅试跑期间的户级进度（running / posting / posted / failed）。
+   * 多次调用同一函数注册：以最后一次为准；传 null 退订。
+   */
+  onAutomationRuleTrialProgress: (
+    handler: ((progress: AutomationRuleTrialAccountProgressDto) => void) | null,
+  ) => void;
 };
 
 /** 主进程 `webContents.send("client-log-line")` 先入队，再由渲染进程 `pullClientLogLines` 拉取 */
@@ -241,6 +249,18 @@ ipcRenderer.on("request-tab", (_event: IpcRendererEvent, tabId: unknown) => {
     }
   } catch (e) {
     console.error("[zhizhu-client preload] 执行 request-tab 回调失败", e);
+  }
+});
+
+/** B 套：试跑户级进度（与 `automationRuleTrialRun.emitTrialProgress` 对齐）；以"最新注册回调"为准 */
+let trialProgressHandler: ((p: AutomationRuleTrialAccountProgressDto) => void) | null = null;
+ipcRenderer.on("automation-rule-trial-progress", (_event: IpcRendererEvent, payload: unknown) => {
+  if (!trialProgressHandler) return;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+  try {
+    trialProgressHandler(payload as AutomationRuleTrialAccountProgressDto);
+  } catch (e) {
+    console.error("[zhizhu-client preload] 执行 automation-rule-trial-progress 回调失败", e);
   }
 });
 
@@ -338,6 +358,9 @@ const api: ZhizhuClientApi = {
         console.error("[zhizhu-client preload] 补发 request-tab 失败", e);
       }
     }
+  },
+  onAutomationRuleTrialProgress: (handler) => {
+    trialProgressHandler = handler;
   },
 };
 

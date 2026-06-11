@@ -23,6 +23,7 @@ import {
 } from "./automationRules";
 import { readClientState } from "./clientState";
 import { getApiBaseUrl } from "./config";
+import { describeRunnerApiContextBlocker } from "./runnerApiContext";
 
 const STATUS_FILE = "automation-rule-sync-status.json";
 const HTTP_TIMEOUT_MS = 28_000;
@@ -469,7 +470,13 @@ export async function runAutomationRuleSyncNow(app: App): Promise<SyncOutcome> {
     try {
       const ctx = readApiContext(app);
       if (!ctx) {
-        return { ok: false as const, skipped: true, reason: "未绑定设备或缺 API 基址；先「设备绑定」后再同步规则。" };
+        return {
+          ok: false as const,
+          skipped: true,
+          reason:
+            describeRunnerApiContextBlocker(app) ??
+            "规则同步前置条件不足（设备凭证、租户或 API 基址）。请先完成「设备绑定」再试。",
+        };
       }
       const prev = readStatus(app);
       const pull = await pullPublished(app, ctx);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { AutomationRuleListDto, TaskCenterRunRecordDto } from "../../sharedTypes";
+import type { AutomationRuleListDto, AutomationRuleRunnerLoopStatusDto, TaskCenterRunRecordDto } from "../../sharedTypes";
+import { accountRunnerProgressPhaseLabel } from "../../accountRunnerProgressUi";
 import { Banner, Button, Field, SectionCard, TextInput } from "../ui";
 import { useStatus } from "../hooks/useStatus";
 import { formatTs, withTimeout } from "../utils";
@@ -260,6 +261,8 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
   const [overrideSlug, setOverrideSlug] = useState("");
   const [overrideProfileId, setOverrideProfileId] = useState("");
   const [overrideBusy, setOverrideBusy] = useState(false);
+  /** 本机 RunnerLoop 快照：任务中心页轮询，展示户级 + 规则步进度 */
+  const [runnerLoopSnap, setRunnerLoopSnap] = useState<AutomationRuleRunnerLoopStatusDto | null>(null);
 
   const selectedTaskIdRef = useRef<string | null>(selectedTaskId);
   selectedTaskIdRef.current = selectedTaskId;
@@ -288,6 +291,23 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
       panelAliveRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!active || typeof window === "undefined" || !window.zhizhu?.getRunnerLoopStatus) {
+      return;
+    }
+    const poll = (): void => {
+      void window.zhizhu!.getRunnerLoopStatus().then((r) => {
+        if (!panelAliveRef.current) {
+          return;
+        }
+        setRunnerLoopSnap(r);
+      });
+    };
+    poll();
+    const tm = setInterval(poll, 2000);
+    return (): void => clearInterval(tm);
+  }, [active]);
 
   const cloudRows = useMemo(
     () =>
@@ -855,6 +875,41 @@ export function TaskCenterPanel({ active, onOpenAutomationRule }: TaskCenterPane
           列表（与控制台任务中心同源）。已排队任务可「取消排队」；执行中任务可「中止本机执行」（停止 Runner
           子进程，结案后云端状态会更新）。要改规则步骤请用「打开规则」跳转后 fork 草稿编辑。
         </p>
+        {runnerLoopSnap?.currentTaskId ? (
+          <div className="mb-3 rounded-md border border-zz-border bg-zz-canvas px-3 py-2 text-xs">
+            <p className="font-semibold text-zz-near">本机 Runner</p>
+            {runnerLoopSnap.currentAccountProgress ? (
+              <p className="zz-meta-line mt-1">
+                任务 {runnerLoopSnap.currentTaskId} · 户{" "}
+                {(runnerLoopSnap.currentAccountProgress.index ?? 0) + 1}/
+                {runnerLoopSnap.currentAccountProgress.total ?? "?"}{" "}
+                {(runnerLoopSnap.currentAccountProgress.accountName &&
+                  runnerLoopSnap.currentAccountProgress.accountName.trim()) ||
+                  runnerLoopSnap.currentAccountProgress.accountId ||
+                  "—"}{" "}
+                · {accountRunnerProgressPhaseLabel(runnerLoopSnap.currentAccountProgress.phase)}
+                {runnerLoopSnap.currentAccountProgress.currentStepId != null &&
+                String(runnerLoopSnap.currentAccountProgress.currentStepId).length > 0 ? (
+                  <>
+                    {" "}
+                    · 步 {String(runnerLoopSnap.currentAccountProgress.currentStepId)}
+                    {runnerLoopSnap.currentAccountProgress.stepPhase
+                      ? ` (${runnerLoopSnap.currentAccountProgress.stepPhase})`
+                      : ""}
+                  </>
+                ) : null}
+                {runnerLoopSnap.currentAccountProgress.error ? (
+                  <span className="text-red-600">
+                    {" "}
+                    — {runnerLoopSnap.currentAccountProgress.error}
+                  </span>
+                ) : null}
+              </p>
+            ) : (
+              <p className="zz-meta-line mt-1">任务 {runnerLoopSnap.currentTaskId} · 正在拉起或步进未上报…</p>
+            )}
+          </div>
+        ) : null}
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <Field label="状态筛选">
             <select

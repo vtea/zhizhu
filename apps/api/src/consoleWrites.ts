@@ -17,6 +17,16 @@ import { RESERVED_PLATFORM_TENANT_ID } from "./jwt.js";
 import { pgErrorCode } from "./authParse.js";
 import { assertTenantAllowsNewConsoleUser } from "./tenantEntitlement.js";
 import {
+  canonicalAuthStatusForBizAccountIngest,
+  coerceRowAccountIdToIngestString,
+  coerceRowAuthStatusToIngestString,
+  pgInListTrustedLegacyRevokedAuthNumericStrings,
+} from "@zhizhu/biz-account-auth-status";
+import {
+  PLACEMENT_REVIEW_AFTER_INTERVAL,
+  PLACEMENT_STATUS_ACTIVE,
+} from "./adPlacementStatus.js";
+import {
   resolveLeadsEnterpriseIdCanonical,
   sqlDyLeadsEnterpriseIdEqParam,
   type EnterpriseScopeFilter,
@@ -329,6 +339,9 @@ export async function createAdPlacement(tenantId: string, body: Record<string, u
         [tenantId, platform, accountId, dyVideoId],
       );
     }
+    const placementStatus = pickStr(body.placement_status) ?? PLACEMENT_STATUS_ACTIVE;
+    const remindAtProvided = Object.prototype.hasOwnProperty.call(body, "remind_at");
+    const remindAt = remindAtProvided ? pickStr(body.remind_at) : null;
     const r = await poolQuery(
       `INSERT INTO biz_ad_placement (
          tenant_id, platform, dy_leads_enterprise_id, account_id, dy_video_id, ad_date,
@@ -337,7 +350,7 @@ export async function createAdPlacement(tenantId: string, body: Record<string, u
        ) VALUES (
          $1, $2, $3, $4, $5, $6::date,
          $7, $8, $9, $10, $11,
-         $12, $13, $14
+         $12, $13, CASE WHEN $14::boolean THEN $15::timestamptz ELSE now() + interval '${PLACEMENT_REVIEW_AFTER_INTERVAL}' END
        ) RETURNING id::text AS id`,
       [
         tenantId,
@@ -352,8 +365,9 @@ export async function createAdPlacement(tenantId: string, body: Record<string, u
         pickNum(body.pre_favorite_count) ?? null,
         pickNum(body.pre_share_count) ?? null,
         isCurrent,
-        pickStr(body.placement_status) ?? null,
-        pickStr(body.remind_at) ?? null,
+        placementStatus,
+        remindAtProvided,
+        remindAt,
       ],
     );
     const id = (r.rows[0] as { id?: string } | undefined)?.id;
@@ -1062,7 +1076,18 @@ export async function detachAndDeleteBizAccount(
   opts: { confirmDetach: boolean },
 ): Promise<WriteResult> {
   if (accountId.startsWith("__detached__:")) {
-    return { ok: false, error: "不可删除系统占位账号", code: "FORBIDDEN", httpStatus: 403 };
+    const pc = await getBizAccountAssociationCounts(tenantId, platform, accountId);
+    const pinned = pc.leads + pc.videos + pc.tasks + pc.placements;
+    if (pinned > 0) {
+      return {
+        ok: false,
+        error:
+          "解绑占位账号仍挂有线索/视频等历史数据，请先在列表使用「迁移占位数据」归并到真实抖音号后再删除占位行",
+        code: "DETACHED_HAS_REFS",
+        httpStatus: 409,
+        association_counts: pc,
+      };
+    }
   }
   const counts = await getBizAccountAssociationCounts(tenantId, platform, accountId);
   const total = counts.leads + counts.videos + counts.tasks + counts.placements;
@@ -1108,6 +1133,135 @@ export async function detachAndDeleteBizAccount(
       await client.query("ROLLBACK");
     } catch {
       /* noop */
+    }
+    return { ok: false, error: messageForBusinessError(e) };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 将 `__detached__:*` 占位行上的 biz_lead / biz_video / biz_task / biz_ad_placement 迁到真实账号后删除占位行。
+ * 要求：每条子数据的 `dy_leads_enterprise_id` 与目标账号一致（避免跨主体串数）。
+ */
+export async function repointDetachedPlaceholderBizAccount(
+  tenantId: string,
+  platform: string,
+  placeholderAccountId: string,
+  toAccountId: string,
+): Promise<WriteResult & { repointed?: BizAccountAssociationCounts }> {
+  if (!placeholderAccountId.startsWith("__detached__:")) {
+    return { ok: false, error: "仅支持解绑占位账号（account_id 以 __detached__: 开头）" };
+  }
+  if (toAccountId.startsWith("__detached__:")) {
+    return { ok: false, error: "目标不能是占位账号" };
+  }
+  if (placeholderAccountId === toAccountId) {
+    return { ok: false, error: "目标账号不能与占位相同" };
+  }
+
+  const exPh = await poolQuery(
+    `SELECT 1 FROM biz_account WHERE tenant_id = $1 AND platform = $2 AND account_id = $3 LIMIT 1`,
+    [tenantId, platform, placeholderAccountId],
+  );
+  if (exPh.rowCount === 0) {
+    return { ok: false, error: "占位账号不存在" };
+  }
+  const exTo = await poolQuery(
+    `SELECT dy_leads_enterprise_id::text AS e FROM biz_account WHERE tenant_id = $1 AND platform = $2 AND account_id = $3 LIMIT 1`,
+    [tenantId, platform, toAccountId],
+  );
+  if (exTo.rowCount === 0) {
+    return { ok: false, error: "目标账号不存在" };
+  }
+  const entTo = String((exTo.rows[0] as { e?: string }).e ?? "").trim();
+  if (entTo === "") {
+    return { ok: false, error: "目标账号未绑定线索版企业主体，无法承接历史数据" };
+  }
+
+  const before = await getBizAccountAssociationCounts(tenantId, platform, placeholderAccountId);
+  const pinned = before.leads + before.videos + before.tasks + before.placements;
+  if (pinned === 0) {
+    return { ok: false, error: "该占位账号下没有可迁移的数据；可直接删除占位行" };
+  }
+
+  const mis = await poolQuery(
+    `SELECT
+       (SELECT count(*)::int FROM biz_lead
+         WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+           AND lower(trim(dy_leads_enterprise_id::text)) <> lower(trim($4::text))
+       ) +
+       (SELECT count(*)::int FROM biz_video
+         WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+           AND lower(trim(dy_leads_enterprise_id::text)) <> lower(trim($4::text))
+       ) +
+       (SELECT count(*)::int FROM biz_task
+         WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+           AND dy_leads_enterprise_id IS NOT NULL AND trim(dy_leads_enterprise_id::text) <> ''
+           AND lower(trim(dy_leads_enterprise_id::text)) <> lower(trim($4::text))
+       ) +
+       (SELECT count(*)::int FROM biz_ad_placement
+         WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
+           AND dy_leads_enterprise_id IS NOT NULL AND trim(dy_leads_enterprise_id::text) <> ''
+           AND lower(trim(dy_leads_enterprise_id::text)) <> lower(trim($4::text))
+       ) AS n`,
+    [tenantId, platform, placeholderAccountId, entTo],
+  );
+  const bad = Number((mis.rows[0] as { n?: number } | undefined)?.n ?? 0);
+  if (bad > 0) {
+    return {
+      ok: false,
+      error: "占位账号下的数据与目标账号所属主体不一致，无法自动归并；请先统一企业主体或逐条处理",
+    };
+  }
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE biz_lead SET account_id = $4, updated_at = now()
+       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
+      [tenantId, platform, placeholderAccountId, toAccountId],
+    );
+    await client.query(
+      `UPDATE biz_video SET account_id = $4, updated_at = now()
+       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
+      [tenantId, platform, placeholderAccountId, toAccountId],
+    );
+    await client.query(
+      `UPDATE biz_task SET account_id = $4, updated_at = now()
+       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
+      [tenantId, platform, placeholderAccountId, toAccountId],
+    );
+    await client.query(
+      `UPDATE biz_ad_placement SET account_id = $4, updated_at = now()
+       WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
+      [tenantId, platform, placeholderAccountId, toAccountId],
+    );
+    await deleteAuxiliaryBizAccountRows(client, tenantId, platform, placeholderAccountId);
+    const dr = await client.query(
+      `DELETE FROM biz_account WHERE tenant_id = $1 AND platform = $2 AND account_id = $3`,
+      [tenantId, platform, placeholderAccountId],
+    );
+    if (dr.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "占位账号不存在" };
+    }
+    await client.query("COMMIT");
+    return { ok: true, repointed: before };
+  } catch (e) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* noop */
+    }
+    const err = e as { code?: string };
+    if (err.code === "23505") {
+      return {
+        ok: false,
+        error:
+          "归并后与目标账号上已有线索/视频主键冲突（重复）。请换一个目标账号或先清理重复数据后再试",
+      };
     }
     return { ok: false, error: messageForBusinessError(e) };
   } finally {
@@ -2887,7 +3041,7 @@ export async function ingestEmployeePersonalAuthRows(
   let skipped = 0;
   for (const srcRow of rows) {
     const row = applyFieldMap(srcRow, fieldMap);
-    const accountId = pickStr(row.account_id);
+    const accountId = coerceRowAccountIdToIngestString(row.account_id);
     if (!accountId) {
       skipped++;
       skipReasons.missing_fields++;
@@ -2923,17 +3077,26 @@ export async function ingestEmployeePersonalAuthRows(
         const canon = await resolveLeadsEnterpriseIdCanonical(tenantId, entId);
         accountEnterpriseId = canon.ok ? canon.dy_leads_enterprise_id : entId;
       }
+      const authRaw = coerceRowAuthStatusToIngestString(row.auth_status);
+      const authCanonical = canonicalAuthStatusForBizAccountIngest(authRaw);
+      const isAuthRevoked = authCanonical === "revoked";
+      const opsStatusInsert = isAuthRevoked ? "revoked" : null;
+      const revokedAtInsert = isAuthRevoked ? new Date() : null;
       await poolQuery(
         `INSERT INTO biz_account (
            tenant_id, platform, account_id, account_kind,
            dy_display_name, dy_unique_id, dy_user_url,
            dy_leads_enterprise_id, dy_leads_enterprise_name,
-           auth_status, authorized_at, expires_at, updated_at
+           auth_status, authorized_at, expires_at,
+           ops_status, revoked_at,
+           updated_at
          ) VALUES (
            $1, $2, $3, $4,
            $5, $6, $7,
            $8, $9,
-           $10, $11, $12, now()
+           $10, $11, $12,
+           $13, $14,
+           now()
          )
          ON CONFLICT (tenant_id, platform, account_id) DO UPDATE SET
            account_kind = EXCLUDED.account_kind,
@@ -2945,6 +3108,21 @@ export async function ingestEmployeePersonalAuthRows(
            auth_status = COALESCE(EXCLUDED.auth_status, biz_account.auth_status),
            authorized_at = COALESCE(EXCLUDED.authorized_at, biz_account.authorized_at),
            expires_at = COALESCE(EXCLUDED.expires_at, biz_account.expires_at),
+           /* EXCLUDED.auth_status 已由 API 规范为 revoked/active；biz_account 侧仍兼容历史数字串，与 DOUYIN_CONFER_LEGACY_REVOKED_STRINGS 一致 */
+           ops_status = CASE
+             WHEN lower(btrim(COALESCE(EXCLUDED.auth_status, ''))) = 'revoked' THEN 'revoked'
+             WHEN (
+                    lower(btrim(COALESCE(biz_account.auth_status, ''))) = 'revoked'
+                    OR btrim(COALESCE(biz_account.auth_status, '')) IN ${pgInListTrustedLegacyRevokedAuthNumericStrings()}
+                  )
+                  AND lower(btrim(COALESCE(EXCLUDED.auth_status, ''))) <> 'revoked' THEN 'running'
+             ELSE biz_account.ops_status
+           END,
+           revoked_at = CASE
+             WHEN lower(btrim(COALESCE(EXCLUDED.auth_status, ''))) = 'revoked'
+               THEN COALESCE(biz_account.revoked_at, now())
+             ELSE NULL
+           END,
            updated_at = now()`,
         [
           tenantId,
@@ -2956,9 +3134,11 @@ export async function ingestEmployeePersonalAuthRows(
           pickStr(row.dy_user_url) ?? null,
           accountEnterpriseId,
           entName ?? null,
-          pickStr(row.auth_status) ?? null,
+          authCanonical,
           pickIsoTime(row.authorized_at) ?? pickIsoTime(row.authorized_at_raw),
           pickIsoTime(row.expires_at) ?? pickIsoTime(row.expires_at_raw),
+          opsStatusInsert,
+          revokedAtInsert,
         ],
       );
       written++;

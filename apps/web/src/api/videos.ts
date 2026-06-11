@@ -14,7 +14,28 @@ export type VideoSortKey =
   | "like_desc"
   | "comment_desc"
   | "favorite_desc"
-  | "share_desc";
+  | "share_desc"
+  | "duration_desc"
+  | "complete_desc"
+  | "lead_desc"
+  | "placement_status_asc"
+  | "placement_status_desc"
+  | "sync_desc";
+
+export const VIDEO_SORT_OPTIONS: { value: VideoSortKey; label: string }[] = [
+  { value: "publish_desc", label: "发布时间降序" },
+  { value: "play_desc", label: "播放量降序" },
+  { value: "like_desc", label: "点赞量降序" },
+  { value: "comment_desc", label: "评论量降序" },
+  { value: "favorite_desc", label: "收藏量降序" },
+  { value: "share_desc", label: "分享量降序" },
+  { value: "duration_desc", label: "时长降序" },
+  { value: "complete_desc", label: "完播率降序" },
+  { value: "lead_desc", label: "线索量降序" },
+  { value: "placement_status_asc", label: "投放状态升序" },
+  { value: "placement_status_desc", label: "投放状态降序" },
+  { value: "sync_desc", label: "指标同步时间降序" },
+];
 
 export type ListVideosQuery = {
   tenantId: string;
@@ -57,6 +78,12 @@ function sortVideos(rows: MockVideo[], sort: VideoSortKey): MockVideo[] {
     const tb = b.dy_publish_at ? new Date(b.dy_publish_at).getTime() : 0;
     return tb - ta;
   };
+  const str = (v: string | null | undefined) => (v ?? "").trim();
+  const bySync = (a: MockVideo, b: MockVideo) => {
+    const ta = a.metric_synced_at ? new Date(a.metric_synced_at).getTime() : 0;
+    const tb = b.metric_synced_at ? new Date(b.metric_synced_at).getTime() : 0;
+    return tb - ta;
+  };
   switch (sort) {
     case "play_desc":
       copy.sort((a, b) => num(b.dy_play_count) - num(a.dy_play_count));
@@ -72,6 +99,24 @@ function sortVideos(rows: MockVideo[], sort: VideoSortKey): MockVideo[] {
       break;
     case "share_desc":
       copy.sort((a, b) => num(b.dy_share_count) - num(a.dy_share_count));
+      break;
+    case "duration_desc":
+      copy.sort((a, b) => num(b.dy_duration_sec) - num(a.dy_duration_sec));
+      break;
+    case "complete_desc":
+      copy.sort((a, b) => num(b.dy_completion_rate) - num(a.dy_completion_rate));
+      break;
+    case "lead_desc":
+      copy.sort((a, b) => num(b.dy_lead_count) - num(a.dy_lead_count));
+      break;
+    case "placement_status_asc":
+      copy.sort((a, b) => str(a.placement_status).localeCompare(str(b.placement_status), "zh-Hans"));
+      break;
+    case "placement_status_desc":
+      copy.sort((a, b) => str(b.placement_status).localeCompare(str(a.placement_status), "zh-Hans"));
+      break;
+    case "sync_desc":
+      copy.sort(bySync);
       break;
     case "publish_desc":
       copy.sort(byPublish);

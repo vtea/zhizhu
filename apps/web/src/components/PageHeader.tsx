@@ -13,16 +13,18 @@ type PageHeaderProps = {
 export function PageHeader({ title, description, titleAs = "h1", actions, eyebrow }: PageHeaderProps) {
   const TitleTag = titleAs;
   return (
-    <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
+    <header className="mb-4 flex flex-wrap items-end justify-between gap-4 sm:mb-8">
       <div className="min-w-0 flex-1">
         {eyebrow ? (
           <p className="mb-1.5 text-xs font-semibold tracking-[0.08em] text-zz-muted uppercase">{eyebrow}</p>
         ) : null}
-        <TitleTag className="font-display text-[1.875rem] font-normal leading-tight tracking-tight text-zz-black">
+        <TitleTag className="font-display text-2xl font-normal leading-tight tracking-tight text-zz-black sm:text-[1.875rem]">
           {title}
         </TitleTag>
         {description ? (
-          <div className="mt-2 max-w-3xl text-base leading-relaxed text-zz-muted">{description}</div>
+          <div className="mt-2 max-w-3xl text-sm leading-relaxed text-zz-muted line-clamp-2 sm:text-base sm:line-clamp-none">
+            {description}
+          </div>
         ) : null}
       </div>
       {actions ? <div className="flex shrink-0 flex-wrap gap-2">{actions}</div> : null}

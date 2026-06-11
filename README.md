@@ -10,7 +10,7 @@
 | [`e2e-playwright-zhizhu-web`](e2e-playwright-zhizhu-web) | **知竹 Web 真机 E2E**（登录/注册，Playwright）；**与**下列字段探测工具**无关**、勿混用 |
 | [`tools/playwright-field-probe`](tools/playwright-field-probe) | 线索版**字段**抓包/对账；**非** 安装包的一部分、**也非同目录 E2E** |
 | [`apps/api`](apps/api) | 服务端 API（占位）：读根目录 `.env` 中的 **`DATABASE_URL`** 连 PostgreSQL；`GET /health` 验库 |
-| [`docs/`](docs/) | 数据字典、立项、Playwright 清单等 |
+| [`docs/`](docs/) | 数据字典、立项、Playwright 清单、[部署指南](docs/部署指南.md) 等 |
 
 **数据库**：连接串见仓库根 [`.env.example`](.env.example)。复制为 **`.env`** 后填写，**勿提交**；浏览器前端**不**直连 PG，仅 `apps/api`（或未来 BFF）使用。**RDS 上的 database 须先在控制台创建**；仓库迁移只负责**表/索引/约束**（不替你 `CREATE DATABASE`）。**`tenant_id`**：工程首版为 **`text`** 与控制台会话一致，与字典示意 `uuid` 的差异见 [`apps/api/README.md`](apps/api/README.md)。
 
@@ -37,6 +37,23 @@
 - **自助注册**：`POST /api/v1/auth/register` 须同时提交 **`username`**（或 `login_username`）与 **`email`**，密码至少 8 位；用户名规则见 API 校验（小写、3–32 位等）。**仅当**根 `.env` 为 **`CONSOLE_ALLOW_PUBLIC_REGISTER=true`** 时开放；否则 API **403**（老环境补键或 `bootstrap:env`）。Web 显示注册入口需 **`VITE_CONSOLE_PUBLIC_REGISTER=true`**。
 - **运维**：`.env` 不入库；RDS 与 `PGSSLMODE` 按云厂商文档对齐（若遇 SSL 报错见根 `.env.example` 注释）。
 
+## 生产部署
+
+**一键部署（推荐）**：装好 Docker Engine 24+ / Compose V2 后，在仓库根执行：
+
+```bash
+# Linux / macOS
+npm run deploy:prod                                # 本机试用：http://localhost:8080
+bash deploy/deploy.sh --domain https://console.example.com --rebuild
+
+# Windows（Docker Desktop）
+npm run deploy:prod:win
+```
+
+脚本会自动检查 docker、生成/补全根 `.env`（含强随机 `JWT_SECRET` / `DEVICE_TOKEN_SECRET`）、写入 `PUBLIC_ORIGIN` / `CORS_*` / `CONSOLE_WEB_PUBLIC_URL`，并 `docker compose build && up -d`，轮询 `/health` 通过后打印访问地址与初始账号（租户 `demo` / `admin` / `A123456`）。详细参数与排障见 **[`docs/部署指南.md`](docs/部署指南.md)**「一键部署」一节。
+
+裸机构建、`API_LISTEN_HOST`、Nginx 同源/分域、环境变量速查与故障排查同样见上文档。编排入口为仓库根 **`docker-compose.yml`**；镜像与 Nginx 示例在 **`deploy/`**（`Dockerfile.api`、`Dockerfile.web`、`nginx.web.conf`、`deploy.sh`、`deploy.ps1`）。
+
 ## 在仓库根安装（workspaces）
 
 ```bash
@@ -52,3 +69,5 @@ npm run dev -w @zhizhu/api
 ```
 
 各包仍可在**各自目录**内单独 `npm install` / `npm run build`。
+
+**客户端（`@zhizhu/client`）单元测试**：命令、globs、命名约定以 **[`apps/client/README.md`](apps/client/README.md)「单元测试」** 为准。仓库根：**`npm test -w @zhizhu/client`**；需 **Node ≥22**。

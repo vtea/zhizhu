@@ -3,7 +3,7 @@ import { createAdPlacement } from "@/api/adPlacements";
 import { getApiBaseUrl } from "@/api/env";
 import { ApiError } from "@/api/http";
 import { listRecommendedVideos, type RecommendedItem } from "@/api/videos";
-import { VideoCoverImg } from "@/components/VideoCoverImg";
+import { VideoCoverPlaceholder, VideoCoverThumb } from "@/components/VideoCoverThumb";
 import { PageHeader } from "@/components/PageHeader";
 import { Banner, Button, Field, OverlaySectionCard, Pill, TextInput } from "@/components/ui";
 import { useSelectedEnterprise } from "@/contexts/SelectedEnterpriseContext";
@@ -12,6 +12,7 @@ import { formatDecimal2, formatNumber } from "@/lib/format";
 import { isPublishWithinLastDaysShanghai } from "@/lib/dateShanghai";
 import { videoPageOpenHrefWithFallback } from "@/lib/videoPageOpenHref";
 import { formatApiErrorMessage, formatQueryError } from "@/lib/queryError";
+import { PlacementStatusPill } from "@/lib/placementStatusPill";
 import { segmentPillClass } from "@/lib/segmentPillClass";
 import { accountEligibleForOpsBinding } from "@/mocks/seed";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -136,6 +137,8 @@ export function RecommendedVideosPage() {
     onMutate: () => setPlacementErr(null),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["ad-placements", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["videos", tenantId] });
+      await qc.invalidateQueries({ queryKey: ["recommended-videos", tenantId] });
       setPlacementVideo(null);
       setPlacementSpend("");
       setPlacementErr(null);
@@ -184,10 +187,26 @@ export function RecommendedVideosPage() {
     <div className="space-y-6">
       <PageHeader
         title="推荐视频"
-        description="仅包含抖音发布时间（近 7 个自然日，含当天，按国内 Asia/Shanghai 日历）内的视频；无发布时间的条目不会出现在列表中。"
+        description="仅包含抖音发布时间（近 7 个自然日，含当天）内的视频；"
+        actions={
+          <>
+            <Link
+              className="text-sm text-zz-blue hover:underline focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/40"
+              to={`/t/${encodeURIComponent(tenantId)}/videos`}
+            >
+              视频管理
+            </Link>
+            <Link
+              className="text-sm text-zz-blue hover:underline"
+              to={`/t/${encodeURIComponent(tenantId)}/ad-placements`}
+            >
+              投放管理
+            </Link>
+          </>
+        }
       />
       {placementFlash ? <Banner kind="ok">{placementFlash}</Banner> : null}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <div className="flex flex-wrap gap-2" role="tablist" aria-label="排序">
           {sortTabs.map((t) => {
             const active = sort === t.id;
@@ -204,21 +223,6 @@ export function RecommendedVideosPage() {
               </button>
             );
           })}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Link
-            className="text-sm text-zz-blue hover:underline focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/40"
-            to={`/t/${encodeURIComponent(tenantId)}/videos`}
-          >
-            视频管理
-          </Link>
-          <span className="text-zz-border">·</span>
-          <Link
-            className="text-sm text-zz-blue hover:underline"
-            to={`/t/${encodeURIComponent(tenantId)}/ad-placements`}
-          >
-            投放管理
-          </Link>
         </div>
       </div>
       {from || accountFilter ? (
@@ -251,40 +255,18 @@ export function RecommendedVideosPage() {
             const placementOpsOk = accRow == null ? true : accountEligibleForOpsBinding(accRow);
             const openHref = videoPageOpenHrefWithFallback(v.dy_video_url, v.dy_video_id);
             const titleText = (v.dy_title?.trim() || "未命名视频");
-            const coverInner = (
-              <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded border border-zz-border-light bg-zz-surface-muted">
-                {v.dy_cover_url ? (
-                  <VideoCoverImg
-                    url={v.dy_cover_url}
-                    className="min-h-0 w-full flex-1 object-cover"
-                    alt=""
-                  />
-                ) : (
-                  <div className="flex min-h-0 flex-1 items-center justify-center px-1 text-center text-[10px] leading-tight text-zz-muted">
-                    无封面
-                  </div>
-                )}
-              </div>
+            const coverInner = v.dy_cover_url ? (
+              <VideoCoverThumb url={v.dy_cover_url} title={titleText} />
+            ) : (
+              <VideoCoverPlaceholder />
             );
             return (
               <article
                 key={`${v.account_id}:${v.dy_video_id}`}
-                className="rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-4 shadow-[0_1px_2px_0_rgb(0_0_0_/_0.04)]"
+                className="zz-grid-item min-w-0 overflow-hidden rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white p-4 shadow-[0_1px_2px_0_rgb(0_0_0_/_0.04)]"
               >
-                <div className="flex items-stretch gap-3">
-                  {openHref ? (
-                    <a
-                      href={openHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex w-[5rem] shrink-0 flex-col self-stretch min-h-0 focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/40"
-                      aria-label={`在新标签页打开视频：${titleText}`}
-                    >
-                      {coverInner}
-                    </a>
-                  ) : (
-                    <div className="flex w-[5rem] shrink-0 flex-col self-stretch min-h-0">{coverInner}</div>
-                  )}
+                <div className="flex min-w-0 items-stretch gap-3">
+                  <div className="shrink-0">{coverInner}</div>
                   <div className="flex min-w-0 flex-1 flex-col">
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="shrink-0 font-mono text-xs text-zz-muted">#{idx + 1}</span>
@@ -294,11 +276,14 @@ export function RecommendedVideosPage() {
                       >
                         {displayAccountName(v)}
                       </span>
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <PlacementStatusPill status={v.placement_status} />
                       <Pill tone="info" className="shrink-0 font-mono">
                         {formatDecimal2(v.recommend_score)}
                       </Pill>
                     </div>
-                    <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-zz-muted">
+                    <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-zz-muted sm:gap-x-4">
                       <span>
                         <span className="text-[11px] tracking-wide">点赞量</span>{" "}
                         <span className="font-mono text-sm text-zz-near">{formatNumber(v.dy_like_count)}</span>

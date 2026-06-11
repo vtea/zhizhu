@@ -27,7 +27,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-const DEMO_BIND_CODE = "ZHIZHU-DEMO-9F2A-7C1D";
+/** 与 `apps/api/migrations/022_seed_console_extensions.sql` 中 demo 租户种子一致；非库内真实码时 consume 会报「无效绑定码」。 */
+const DEMO_BIND_CODE = "BIND-DEMO-001";
 
 type DeviceBrowserRow = MockDeviceBrowserAccount & {
   device_id: string;
@@ -424,9 +425,6 @@ export function DeviceBindingPage() {
             </Button>
           </div>
           <OverlaySectionCard open={bindModalOpen} onClose={() => setBindModalOpen(false)} title="新设备绑定" titleAs="h2">
-            <p className="mb-4 text-sm text-zz-muted">
-              配置 API 时由服务端写入 biz_device_bind_code；离线演示为固定码。客户端校验接口与立项书 §5.1 对齐。
-            </p>
             {apiBase ? (
               <div className="mb-4">
                 {!canManageTenant ? (
@@ -451,26 +449,50 @@ export function DeviceBindingPage() {
                 复制
               </Button>
             </div>
+            {apiBase && !liveCode ? (
+              <p className="mt-2 text-xs text-zz-muted">
+                未生成新码时展示的是演示库种子码 <span className="font-mono">BIND-DEMO-001</span>（仅{" "}
+                <span className="font-mono">demo</span> 租户且已执行含 <span className="font-mono">022</span>{" "}
+                的迁移时可用）。正式绑定请点「生成绑定码」后复制服务端返回的 <span className="font-mono">BIND-…</span>{" "}
+                一次性码。
+              </p>
+            ) : null}
             {copyHint ? <p className="mt-2 text-sm text-zz-blue">{copyHint}</p> : null}
             <div className="mt-8 border-t border-zz-border-light pt-6">
-              <h3 className="text-sm font-semibold text-zz-near">校验绑定码（公开 API）</h3>
-              <p className="mt-1 text-xs text-zz-muted">POST /api/v1/device-bind-codes/verify，返回 tenant_id 供 Runner 换租户上下文。</p>
+              <h3 className="text-sm font-semibold text-zz-near">绑定校验</h3>
               <div className="mt-3 flex flex-wrap gap-2">
                 <TextInput
                   className="w-full flex-1 sm:min-w-[200px]"
                   mono
                   value={verifyInput}
                   onChange={(ev) => setVerifyInput(ev.target.value)}
-                  placeholder="粘贴绑定码"
+                  placeholder="粘贴要探测的绑定码"
                 />
+                <Button
+                  variant="secondary"
+                  size="md"
+                  disabled={!apiBase}
+                  type="button"
+                  onClick={() => {
+                    setVerifyOut(null);
+                    setVerifyInput(displayCode);
+                  }}
+                >
+                  当前展示码
+                </Button>
                 <Button
                   variant="primary"
                   size="md"
                   isLoading={verifyMut.isPending}
                   disabled={!apiBase}
                   onClick={() => {
+                    const c = verifyInput.trim();
+                    if (!c) {
+                      setVerifyOut("请先填写绑定码，或使用「填入当前展示码」。");
+                      return;
+                    }
                     setVerifyOut(null);
-                    verifyMut.mutate(verifyInput.trim());
+                    verifyMut.mutate(c);
                   }}
                 >
                   {verifyMut.isPending ? "校验中…" : "校验"}

@@ -1,6 +1,6 @@
 import "./loadEnv";
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage } from "electron";
 import fs from "node:fs";
@@ -89,6 +89,22 @@ import {
   listTaskLocalOverrides,
   setTaskLocalOverride,
 } from "./taskLocalOverrides";
+
+/** CMD 默认常为 GBK，主进程 UTF-8 中文会乱码；尽量切到 UTF-8（与当前控制台会话共享时生效）。 */
+function trySetWindowsConsoleUtf8(): void {
+  if (process.platform !== "win32") {
+    return;
+  }
+  try {
+    spawnSync("cmd.exe", ["/d", "/s", "/c", "chcp 65001>nul"], {
+      stdio: "inherit",
+      windowsHide: true,
+    });
+  } catch {
+    /* ignore */
+  }
+}
+trySetWindowsConsoleUtf8();
 
 function untrustedDiagnosticsFallback(): ClientDiagnosticsDto {
   return {
@@ -1462,12 +1478,26 @@ void (function registerPrimaryInstanceAppHooks(): void {
         }
         return drafts.find((d) => d.rule_id === id)?.name?.trim() ?? "";
       })();
+      /**
+       * B 套：户级即推进度回调通过 `webContents.send` 推回 renderer 触发实时 UI。
+       * renderer 通过 preload 暴露的 `onAutomationRuleTrialProgress(cb)` 订阅。
+       */
+      const emitTrialProgressIpc = (p: unknown): void => {
+        try {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send("automation-rule-trial-progress", p);
+          }
+        } catch {
+          /** renderer 已关闭 / IPC channel 不可用 → 静默忽略，不影响主流程 */
+        }
+      };
       let result: Awaited<ReturnType<typeof trialRunAutomationRule>>;
       try {
         result = await trialRunAutomationRule(
           app,
           { ruleId, source, ruleDir, profileId, params, headed, captureTrace },
           mirrorRuleRunLine,
+          emitTrialProgressIpc,
         );
       } catch (trialErr) {
         /** 仅试跑 await 抛错时收尾；勿与 mirror/ledger 失败混用，以免误判成功试跑为失败 */

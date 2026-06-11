@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { test } from "node:test";
 
 import { applyPlaceholders, createEmptyRuleBody, validateRuleBody } from "./index";
+
+const highDiveRulePath = path.resolve(
+  process.cwd(),
+  "../../apps/playwright/脚本/high-dive-lead-daily-sync/rule.json",
+);
 
 test("validateRuleBody: 拒绝非对象 body", () => {
   assert.equal(validateRuleBody(null), "body 须为 JSON 对象（含 schema_version 与 steps[]）");
@@ -158,6 +165,53 @@ test("validateRuleBody: captureResponse 正则校验", () => {
       ],
     }) ?? "",
     /合法正则/,
+  );
+});
+
+test("validateRuleBody: 磁盘 high-dive-lead-daily-sync/rule.json 通过校验", () => {
+  const raw = fs.readFileSync(highDiveRulePath, "utf8");
+  const body = JSON.parse(raw) as unknown;
+  assert.equal(validateRuleBody(body), null);
+  const steps = (body as { steps: { step_id?: string; force?: boolean }[] }).steps;
+  const pick50 = steps.filter((s) => s.step_id?.startsWith("pick_page_size_50"));
+  assert.equal(pick50.length, 2);
+  assert.ok(pick50.every((s) => s.force !== true), "50条/页须普通 click 以触发列表 refetch");
+  const waitYlz50 = steps.find((s) => s.step_id === "wait_ylz_50_per_page");
+  assert.ok(waitYlz50);
+  assert.equal(
+    (waitYlz50 as { accumulate_grow_by?: number }).accumulate_grow_by,
+    undefined,
+    "ylz 50/页应等首包，勿 accumulate_grow_by",
+  );
+  assert.ok(steps.some((s) => s.step_id === "clear_ylz_before_page_size_50"));
+});
+
+test("validateRuleBody: click.force 接受 boolean", () => {
+  assert.equal(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [
+        {
+          type: "click",
+          force: true,
+          selector: { kind: "css", value: "button" },
+        },
+      ],
+    }),
+    null,
+  );
+  assert.match(
+    validateRuleBody({
+      schema_version: 1,
+      steps: [
+        {
+          type: "click",
+          force: "yes",
+          selector: { kind: "css", value: "button" },
+        },
+      ],
+    }) ?? "",
+    /click\)\.force 须为 boolean/,
   );
 });
 

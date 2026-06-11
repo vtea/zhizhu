@@ -2,7 +2,7 @@
  * 列表筛选 / 子区切换等常用的黑白药丸段控件，与推荐视频、线索留资、系统设置子页等保持一致。
  */
 const BASE =
-  "shrink-0 cursor-pointer rounded-full px-4 py-1.5 text-sm transition-colors focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/40";
+  "shrink-0 cursor-pointer rounded-full px-4 py-1.5 text-sm transition-colors focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/40 max-sm:px-3 max-sm:py-1 max-sm:text-xs";
 
 const PANEL_TAB_RING = "focus-visible:outline focus-visible:ring-2 focus-visible:ring-zz-blue/40";
 

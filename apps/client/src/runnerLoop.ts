@@ -20,23 +20,16 @@ import { resolveZhizhuRunnerConsoleBase } from "./config";
 import { augmentRunnerErrorMessageForDisplay } from "./runnerFailureHints";
 import { buildBizVideoCoverageForAggregate } from "./bizVideoCaptureCoverage";
 import {
-  bizVideoCaptureParamsForIngest,
   normalizeBizVideoParamAccountId,
   normalizeBizVideoParamAccountIds,
   resolveBizVideoProfileScrollCaptureWait,
   resolveBizVideoProfileScrollLimitPages,
 } from "./bizVideoIngestParams";
-import {
-  bizVideoRowDedupeKey,
-  capturesHaveBizVideoNetworkingPayload,
-  tryBuildBizVideoIngestRowsFromSummaryCaptures,
-} from "./bizVideoIngestFromCaptures";
+import { durationMsBetweenIso } from "./durationMsBetweenIso";
 import {
   buildRowsFromCapturesByIngestTarget,
-  cloneFileRuleIngestRowsSnapshot,
   discoverRuleBundleDirByMappingTarget,
   loadFileRuleBundleForQueuedFilesystemTask,
-  postEmployeePersonalAuthFileRuleIngest,
   readTenantDeviceApiContext,
   resolveIngestMappingByTarget,
   resolveFileRuleRoot,
@@ -44,6 +37,13 @@ import {
   type FileRuleBundleLite,
   type TenantDeviceApiContext,
 } from "./employeePersonalAuthFileIngest";
+import {
+  bizVideoAccountDisplayNameForProgress,
+  ingestOneAccountFromTaskRuleResult,
+  makePerAccountCaptureFailureDto,
+  summarizePerAccountIngestResults,
+} from "./bizVideoIngestPerAccount";
+import type { BizVideoPerAccountIngestResultDto, FileRuleSkipDetailDto } from "./sharedTypes";
 import {
   getProfileById,
   getProfileBySlug,
@@ -69,6 +69,9 @@ import { clearRunnerLoopTaskCancel, isRunnerLoopTaskCancelRequested } from "./ru
 import { appendTaskCenterRun } from "./taskCenterLedger";
 import { applyTaskLocalPayloadOverrides, clearTaskLocalOverride } from "./taskLocalOverrides";
 import { resolveTaskRuleHardTimeoutMs } from "./taskRuleHardTimeout";
+import { patchFromRunnerStructuredStepLine } from "./runnerStructuredStep";
+import { RUNNER_STEP_PROGRESS_DEBOUNCE_MS } from "./runnerStepProgressDebounceMs";
+import { createRunnerStepProgressDebouncer } from "./runnerStepProgressDebouncer";
 
 const STATUS_FILE = "automation-rule-runner-status.json";
 const POLL_INTERVAL_MS = 30_000;
@@ -94,6 +97,24 @@ function profileFromDeviceBrowserAccountBinding(
   return getProfileBySlug(app, boundSlug);
 }
 
+/** 单户即推进度（仅在 enterprise_all_accounts 多户任务期间存在，结案清空）；与 sharedTypes 对齐。 */
+export type RunnerLoopCurrentAccountProgress = {
+  index: number;
+  total: number;
+  accountId: string;
+  accountName?: string;
+  currentStepId?: string | null;
+  currentStepIndex?: number;
+  stepPhase?: "start" | "ok" | "fail";
+  stepError?: string;
+  phase: "running" | "captured" | "posting" | "posted" | "failed";
+  written?: number;
+  skipped?: number;
+  rowsPosted?: number;
+  durationMs?: number;
+  error?: string;
+};
+
 export type RunnerLoopStatus = {
   /** 上一次成功完成（succeeded 或 failed→server）的 task id */
   lastTaskId: string | null;
@@ -112,6 +133,10 @@ export type RunnerLoopStatus = {
   lastPollErrorMessage: string | null;
   /** 当前正在跑的任务 id；非空时表示「忙」 */
   currentTaskId: string | null;
+  /** B 套：当前任务的户级进度（与 sharedTypes 对齐；polling 拉取即可） */
+  currentAccountProgress?: RunnerLoopCurrentAccountProgress | null;
+  /** B 套：当前任务已完成的户级入库结果（结案清空） */
+  currentAccountIngestResults?: BizVideoPerAccountIngestResultDto[];
 };
 
 function emptyStatus(): RunnerLoopStatus {
@@ -125,6 +150,8 @@ function emptyStatus(): RunnerLoopStatus {
     lastPollErrorStatus: null,
     lastPollErrorMessage: null,
     currentTaskId: null,
+    currentAccountProgress: null,
+    currentAccountIngestResults: [],
   };
 }
 
@@ -156,6 +183,18 @@ function readStatus(app: App): RunnerLoopStatus {
     }
     if (typeof j.lastPollErrorMessage === "string") out.lastPollErrorMessage = j.lastPollErrorMessage;
     if (typeof j.currentTaskId === "string") out.currentTaskId = j.currentTaskId;
+    if (
+      j.currentAccountProgress &&
+      typeof j.currentAccountProgress === "object" &&
+      !Array.isArray(j.currentAccountProgress)
+    ) {
+      out.currentAccountProgress = j.currentAccountProgress as RunnerLoopCurrentAccountProgress;
+    } else if (j.currentAccountProgress === null) {
+      out.currentAccountProgress = null;
+    }
+    if (Array.isArray(j.currentAccountIngestResults)) {
+      out.currentAccountIngestResults = j.currentAccountIngestResults as BizVideoPerAccountIngestResultDto[];
+    }
     return out;
   } catch {
     return emptyStatus();
@@ -483,6 +522,7 @@ async function spawnTaskRule(
     hardTimeoutMs: number;
   },
   onLogLine: (line: string) => void,
+  onStructuredEvent?: (parsed: Record<string, unknown>) => void,
 ): Promise<TaskRunSummary> {
   const cliJs = resolveRunnerCliJs();
   if (!cliJs) {
@@ -576,6 +616,7 @@ async function spawnTaskRule(
     return await waitForRunnerTaskRuleChildClose(child, {
       hardTimeoutMs: args.hardTimeoutMs,
       onLogLine,
+      ...(onStructuredEvent ? { onStructuredEvent } : {}),
       userAbortRef,
     });
   } finally {
@@ -1102,6 +1143,20 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
   const runFailures: Array<{ account_id: string; error_code?: string; error_message?: string }> = [];
   const aggregateRows: Record<string, unknown>[] = [];
   const aggregateCaptures: Record<string, unknown> = {};
+  /**
+   * B 套：每户跑完即 POST `/runner/file-rule-ingest` 后追加，避免批末聚合 POST 在
+   * 网络瞬失时让"已成功 28 户"全部白跑。`written / skipped / target / skip_*` 由 helper 透传，
+   * 上层在批末聚合到 `result_summary.ingest_*`；`written: null` 表示该户 capture 失败未触发 POST。
+   */
+  const perAccountIngestResults: BizVideoPerAccountIngestResultDto[] = [];
+  const perAccountIngestSkipInfo: Array<{
+    skip_reasons: Record<string, number> | null;
+    skip_details: FileRuleSkipDetailDto[];
+    skip_details_truncated: boolean;
+    target: string | null;
+  }> = [];
+  /** biz_video 户级 helper 内 merge 阻断的中文提示（拼接到 result_summary.biz_video_merge_hint_zh） */
+  const perAccountMergeHints: string[] = [];
   let bizVideoOpsAccounts: Record<string, unknown>[] = [];
   let bizVideoAccountsFetchError: string | null = null;
   if (inferredIngestTarget === "biz_video") {
@@ -1124,6 +1179,67 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       deviceBrowserAccountRows = bindR.data;
     }
   }
+  /**
+   * B 套：循环开始前一次性解析 ingest mapping，使户级即推可在每户 spawn 完成后立即触发；
+   * 失败时与原批末 `producedIngestibleData && !resolvedIngest` 分支等价 fail-fast，但提前到循环前，
+   * 避免 28 户跑完才发现 mapping 缺失。
+   */
+  const resolvedIngest = inferredIngestTarget
+    ? resolveIngestMappingByTarget(fileRuleBundle, publishedLogicalRuleId, ruleId, inferredIngestTarget)
+    : null;
+  if (inferredIngestTarget && !resolvedIngest) {
+    const reason = `本机未找到 ${inferredIngestTarget} 的 mapping（脚本根 ${resolveFileRuleRoot()}；可设 ZHIZHU_FILE_RULE_ROOT 指向脚本目录的父级）`;
+    await patchTask(ctx, task.id, {
+      status: "failed",
+      error_code: "RUNNER_INCOMPATIBLE",
+      result_summary: { reason },
+    });
+    finishCloudTaskLedger(app, {
+      taskId: task.id,
+      ruleId,
+      ruleVersion: ruleVersionForLedger,
+      startedAt: cloudRunStartedAt,
+      ok: false,
+      errorCode: "RUNNER_INCOMPATIBLE",
+      summary: { reason },
+      ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
+    });
+    writeStatus(app, {
+      ...readStatus(app),
+      lastTaskId: task.id,
+      lastFinishedAt: new Date().toISOString(),
+      lastOk: false,
+      lastErrorCode: "RUNNER_INCOMPATIBLE",
+      lastErrorMessage: reason,
+      currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
+      lastPolledAt: new Date().toISOString(),
+      lastPollErrorStatus: null,
+      lastPollErrorMessage: null,
+    });
+    return true;
+  }
+  const ingestMappingTarget =
+    resolvedIngest && typeof resolvedIngest.mapping.target === "string"
+      ? resolvedIngest.mapping.target.trim()
+      : "";
+  /** 户级即推进度上报：每户开始 / 结束时写 `currentAccountProgress` + 累积 `currentAccountIngestResults` */
+  const doWriteAccountRunProgress = (next: RunnerLoopCurrentAccountProgress): void => {
+    writeStatus(app, {
+      ...readStatus(app),
+      currentTaskId: task.id,
+      currentAccountProgress: next,
+      currentAccountIngestResults: [...perAccountIngestResults],
+    });
+  };
+
+  const accountRunProgressDebouncer = createRunnerStepProgressDebouncer<RunnerLoopCurrentAccountProgress>({
+    delayMs: RUNNER_STEP_PROGRESS_DEBOUNCE_MS,
+    deliver: doWriteAccountRunProgress,
+  });
+  const writeAccountRunProgress = (next: RunnerLoopCurrentAccountProgress): void =>
+    accountRunProgressDebouncer.emitProgress(next);
   if (await bailIfUserCancelled()) {
     return true;
   }
@@ -1133,6 +1249,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       break;
     }
     const accountIdForRun = accountRunList[i]!;
+    const runnerAccountLabel =
+      bizVideoAccountDisplayNameForProgress(accountIdForRun, bizVideoOpsAccounts) || undefined;
     const runId = `task_${task.id}_${Date.now()}_${i + 1}`;
     let paramsForRun: Record<string, unknown> = {
       ...params,
@@ -1170,6 +1288,32 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
           captures: {},
           error_code: mergeFailCode,
           error_message: mergeFailMsg,
+        });
+        /** B 套：spawn 前 merge 失败也按"户失败"上报，UI 才能在 currentAccountIngestResults 看到该户为何被跳过 */
+        const startedAt = new Date().toISOString();
+        const failDto = makePerAccountCaptureFailureDto({
+          accountId: accountIdForRun,
+          index: i,
+          total: accountRunList.length,
+          startedAt,
+          error_code: mergeFailCode,
+          error_message: mergeFailMsg,
+          opsAccounts: bizVideoOpsAccounts,
+        });
+        perAccountIngestResults.push(failDto);
+        perAccountIngestSkipInfo.push({
+          skip_reasons: null,
+          skip_details: [],
+          skip_details_truncated: false,
+          target: null,
+        });
+        writeAccountRunProgress({
+          index: i,
+          total: accountRunList.length,
+          accountId: accountIdForRun,
+          accountName: runnerAccountLabel,
+          phase: "failed",
+          error: mergeFailMsg,
         });
         continue;
       }
@@ -1209,6 +1353,29 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
     fs.mkdirSync(userDataDir, { recursive: true });
     const fingerprintSeed = `${effectiveProfile.id}:${effectiveProfile.slug}`;
     onLogLine(`[runner-loop] 账号采集 ${i + 1}/${accountRunList.length} account=${accountIdForRun}`);
+    /** 户级进度（running）：UI 通过 polling 看见"当前户正在跑" */
+    const accountStartedAt = new Date().toISOString();
+    writeAccountRunProgress({
+      index: i,
+      total: accountRunList.length,
+      accountId: accountIdForRun,
+      accountName: runnerAccountLabel,
+      phase: "running",
+    });
+    const onRunnerStructured = (j: Record<string, unknown>): void => {
+      const patch = patchFromRunnerStructuredStepLine(j);
+      if (!patch) {
+        return;
+      }
+      writeAccountRunProgress({
+        index: i,
+        total: accountRunList.length,
+        accountId: accountIdForRun,
+        accountName: runnerAccountLabel,
+        phase: "running",
+        ...patch,
+      });
+    };
     const one = await spawnTaskRule(
       app,
       {
@@ -1231,9 +1398,12 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         }),
       },
       onLogLine,
+      onRunnerStructured,
     );
     runSummaries.push(one);
     if (one.ok) {
+      /** 保留 aggregateCaptures 仅用于批末 `buildBizVideoCoverageForAggregate` 对账摘要（已被 captureProjection 投影到极小）。 */
+      aggregateCaptures[accountIdForRun] = one.captures;
       if (one.rows.length > 0) {
         if (inferredIngestTarget === "biz_video") {
           aggregateRows.push(
@@ -1255,12 +1425,144 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         });
         aggregateRows.push(...derivedRows);
       }
-      aggregateCaptures[accountIdForRun] = one.captures;
+      /**
+       * B 套核心：本户子进程成功后立刻 POST `/runner/file-rule-ingest`。
+       * - inferredIngestTarget=null（纯导航类规则）：跳过户级即推（与原批末逻辑一致：不入库）。
+       * - resolvedIngest 已在循环前 fail-fast 校验存在，此处可直接使用。
+       * - helper 内 retry/UPSERT 幂等已就绪；失败户只影响该户。
+       */
+      if (inferredIngestTarget && resolvedIngest) {
+        writeAccountRunProgress({
+          index: i,
+          total: accountRunList.length,
+          accountId: accountIdForRun,
+          accountName: runnerAccountLabel,
+          phase: "posting",
+        });
+        const outcome = await ingestOneAccountFromTaskRuleResult({
+          ctx,
+          taskOrManualId: task.id,
+          ingestRuleLabel: resolvedIngest.ingestRuleLabel,
+          mapping: resolvedIngest.mapping,
+          ingestTarget: inferredIngestTarget,
+          accountId: accountIdForRun,
+          paramsForRun,
+          captures: one.captures,
+          runnerOutputRows: one.rows,
+          syncBatchId: `task_${task.id}`,
+          opsAccounts: bizVideoOpsAccounts,
+          mode,
+          index: i,
+          total: accountRunList.length,
+          startedAt: accountStartedAt,
+        });
+        perAccountIngestResults.push(outcome.result_dto);
+        perAccountIngestSkipInfo.push({
+          skip_reasons: outcome.skip_reasons,
+          skip_details: outcome.skip_details,
+          skip_details_truncated: outcome.skip_details_truncated,
+          target: outcome.target,
+        });
+        if (outcome.merge_blocked_reason_zh) {
+          perAccountMergeHints.push(outcome.merge_blocked_reason_zh);
+          onLogLine(`[runner-loop] account=${accountIdForRun} ${outcome.merge_blocked_reason_zh}`);
+        }
+        writeAccountRunProgress({
+          index: i,
+          total: accountRunList.length,
+          accountId: accountIdForRun,
+          accountName: runnerAccountLabel,
+          phase: outcome.ok ? "posted" : "failed",
+          written: outcome.written,
+          skipped: outcome.skipped,
+          rowsPosted: outcome.rows_posted,
+          durationMs: outcome.result_dto.duration_ms,
+          ...(outcome.error_message ? { error: outcome.error_message } : {}),
+        });
+        if (outcome.ok) {
+          onLogLine(
+            `[runner-loop] account=${accountIdForRun} 入库成功 written=${outcome.written} skipped=${outcome.skipped}（户级即推）`,
+          );
+        } else {
+          runFailures.push({
+            account_id: accountIdForRun,
+            error_code: outcome.error_code,
+            error_message: outcome.error_message,
+          });
+          onLogLine(
+            `[runner-loop] account=${accountIdForRun} 入库失败 code=${outcome.error_code ?? "?"} msg=${outcome.error_message ?? "?"}`,
+          );
+        }
+      } else {
+        /**
+         * 无 ingest 目标的规则（纯导航等）：户级占位「成功」，与试跑路径一致便于 UI。
+         * 有入库目标的规则在本循环前应具备设备 API 上下文与 mapping；不满足时通常在取任务或加载规则 bundle 阶段已失败，而非落到此处占位。
+         */
+        const finishedAtNav = new Date().toISOString();
+        const durationMsNav = durationMsBetweenIso(
+          accountStartedAt,
+          finishedAtNav,
+        );
+        perAccountIngestResults.push({
+          account_id: accountIdForRun,
+          index: i,
+          total: accountRunList.length,
+          capture_ok: true,
+          ingest_ok: true,
+          rows_posted: 0,
+          written: 0,
+          skipped: 0,
+          duration_ms: durationMsNav,
+          started_at: accountStartedAt,
+          finished_at: finishedAtNav,
+        });
+        perAccountIngestSkipInfo.push({
+          skip_reasons: null,
+          skip_details: [],
+          skip_details_truncated: false,
+          target: null,
+        });
+        writeAccountRunProgress({
+          index: i,
+          total: accountRunList.length,
+          accountId: accountIdForRun,
+          accountName: runnerAccountLabel,
+          phase: "posted",
+          written: 0,
+          skipped: 0,
+          rowsPosted: 0,
+          durationMs: durationMsNav,
+        });
+      }
     } else {
+      const captureFailDto = makePerAccountCaptureFailureDto({
+        accountId: accountIdForRun,
+        index: i,
+        total: accountRunList.length,
+        startedAt: accountStartedAt,
+        error_code: one.error_code,
+        error_message: one.error_message,
+        opsAccounts: bizVideoOpsAccounts,
+      });
       runFailures.push({
         account_id: accountIdForRun,
         error_code: one.error_code,
-        error_message: augmentRunnerErrorMessageForDisplay(one.error_code, one.error_message),
+        error_message: captureFailDto.error_message ?? augmentRunnerErrorMessageForDisplay(one.error_code, one.error_message),
+      });
+      perAccountIngestResults.push(captureFailDto);
+      perAccountIngestSkipInfo.push({
+        skip_reasons: null,
+        skip_details: [],
+        skip_details_truncated: false,
+        target: null,
+      });
+      writeAccountRunProgress({
+        index: i,
+        total: accountRunList.length,
+        accountId: accountIdForRun,
+        accountName: runnerAccountLabel,
+        phase: "failed",
+        ...(captureFailDto.error_message ? { error: captureFailDto.error_message } : {}),
       });
     }
     if (isRunnerLoopTaskCancelRequested() || one.error_code === "USER_CANCELLED") {
@@ -1268,6 +1570,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       break;
     }
   }
+  accountRunProgressDebouncer.flushPendingStepOnly();
   const userStoppedTask =
     isRunnerLoopTaskCancelRequested() ||
     runFailures.some((f) => f.error_code === "USER_CANCELLED") ||
@@ -1311,332 +1614,105 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
     };
   }
 
+  /**
+   * B 套：循环内每户已 POST 入库，summary.ok 取决于"是否所有户的 capture+ingest 都成功"。
+   * `runFailures` 包含 spawn 前 merge 失败、子进程失败、户级 POST 失败三类，全部按户隔离不阻断其他户。
+   */
+  const aggregatedIngest = inferredIngestTarget
+    ? summarizePerAccountIngestResults(perAccountIngestResults, perAccountIngestSkipInfo)
+    : null;
   let patchBody = summary.ok
     ? {
         status: "succeeded" as const,
         result_summary: {
-          rows_count: summary.rows.length,
+          rows_count: aggregatedIngest?.rows_count ?? summary.rows.length,
           captures_keys: Object.keys(summary.captures ?? {}),
           step_durations: summary.summary?.step_durations,
           rule_version: effectiveRuleVersion,
-        },
+        } as Record<string, unknown>,
       }
     : userStoppedTask
       ? {
           status: "cancelled" as const,
           result_summary: {
             reason: summary.error_message ?? "用户已中止执行。",
-            rows_count: summary.rows.length,
+            rows_count: aggregatedIngest?.rows_count ?? summary.rows.length,
             step_durations: summary.summary?.step_durations,
-          },
+          } as Record<string, unknown>,
         }
       : {
           status: "failed" as const,
           error_code: summary.error_code ?? "INTERNAL_ERROR",
           result_summary: {
-            rows_count: summary.rows.length,
+            rows_count: aggregatedIngest?.rows_count ?? summary.rows.length,
             error_message: summary.error_message ?? "",
             failed_step: summary.summary?.failed_step,
             step_durations: summary.summary?.step_durations,
-          },
+          } as Record<string, unknown>,
         };
-  const bizVideoIngestAttempt =
-    inferredIngestTarget === "biz_video"
-      ? tryBuildBizVideoIngestRowsFromSummaryCaptures(
-          summary.captures as Record<string, unknown>,
-          `task_${task.id}`,
-          params,
+  /**
+   * 把户级即推聚合结果挂到 `result_summary`：与原批末单次 POST 字段同名（ingest_written / ingest_skipped /
+   * ingest_target / ingest_skip_reasons / ingest_skip_details），便于 Web 控制台、`TaskCenterPanel`
+   * 复用现有渲染；新增 `account_ingest_results` 详情供 UI 按户展开。
+   */
+  if (inferredIngestTarget && aggregatedIngest) {
+    const rs = patchBody.result_summary;
+    rs.ingest_written = aggregatedIngest.ingest_written;
+    rs.ingest_skipped = aggregatedIngest.ingest_skipped;
+    if (aggregatedIngest.ingest_target) {
+      rs.ingest_target = aggregatedIngest.ingest_target;
+    }
+    if (aggregatedIngest.ingest_skip_reasons) {
+      rs.ingest_skip_reasons = aggregatedIngest.ingest_skip_reasons;
+    }
+    rs.ingest_skip_details = aggregatedIngest.ingest_skip_details;
+    if (aggregatedIngest.ingest_skip_details_truncated) {
+      rs.ingest_skip_details_truncated = true;
+    }
+    rs.account_ingest_results = perAccountIngestResults;
+    if (perAccountMergeHints.length > 0) {
+      /** 多户合并阻断的中文提示用「；」拼接，与原 `biz_video_merge_hint_zh` 单户文案兼容 */
+      rs.biz_video_merge_hint_zh = perAccountMergeHints.join("；");
+    }
+    if (ingestMappingTarget === "biz_video") {
+      try {
+        /**
+         * 对账摘要 `rowsForIngest` 仅按 length / `account_id` 计数，构造轻量占位即可
+         * （户级 ingest_rows_snapshot 已被 helper 内 POST 后释放，不保留）。
+         */
+        const coveragePlaceholder: Record<string, unknown>[] = [];
+        for (const r of perAccountIngestResults) {
+          for (let k = 0; k < r.rows_posted; k++) {
+            coveragePlaceholder.push({ account_id: r.account_id });
+          }
+        }
+        const cov = buildBizVideoCoverageForAggregate({
+          summaryCaptures: summary.captures as Record<string, unknown>,
+          taskParams: params,
           defaultAccountId,
           mode,
-          bizVideoOpsAccounts,
           accountRunList,
-        )
-      : null;
-  const rowsFromCaptures =
-    bizVideoIngestAttempt != null
-      ? bizVideoIngestAttempt.rows
-      : inferredIngestTarget
-        ? buildRowsFromCapturesByIngestTarget(inferredIngestTarget, summary.captures, {
-            syncBatchId: `task_${task.id}`,
-            params,
-          })
-        : [];
-  /** 与 aggregateRows 推导不一致或仅 captures 可还原行时，仍以 captures 为准尝试入库（例如部分账号失败但 summary.ok 为 false）。 */
-  const producedIngestibleData = summary.rows.length > 0 || rowsFromCaptures.length > 0;
-  let ingestWritten = 0;
-  if (!userStoppedTask && (summary.ok || summary.rows.length > 0 || producedIngestibleData)) {
-    const resolvedIngest = inferredIngestTarget
-      ? resolveIngestMappingByTarget(
-          fileRuleBundle,
-          publishedLogicalRuleId,
-          ruleId,
-          inferredIngestTarget,
-        )
-      : null;
-    if (producedIngestibleData && inferredIngestTarget && !resolvedIngest) {
-      const reason = `采集有数据但未找到本机 ${inferredIngestTarget} 的 mapping（脚本根 ${resolveFileRuleRoot()}；可设 ZHIZHU_FILE_RULE_ROOT 指向脚本目录的父级）`;
-      await patchTask(ctx, task.id, {
-        status: "failed",
-        error_code: "RUNNER_INCOMPATIBLE",
-        result_summary: { reason },
-      });
-      finishCloudTaskLedger(app, {
-        taskId: task.id,
-        ruleId,
-        ruleVersion: ruleVersionForLedger,
-        startedAt: cloudRunStartedAt,
-        ok: false,
-        errorCode: "RUNNER_INCOMPATIBLE",
-        summary: { reason },
-        ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
-      });
-      writeStatus(app, {
-        ...readStatus(app),
-        lastTaskId: task.id,
-        lastFinishedAt: new Date().toISOString(),
-        lastOk: false,
-        lastErrorCode: "RUNNER_INCOMPATIBLE",
-        lastErrorMessage: reason,
-        currentTaskId: null,
-        lastPolledAt: new Date().toISOString(),
-        lastPollErrorStatus: null,
-        lastPollErrorMessage: null,
-      });
-      return true;
-    }
-    if (resolvedIngest) {
-      const mt =
-        typeof resolvedIngest.mapping.target === "string" ? resolvedIngest.mapping.target.trim() : "";
-      const rowDerivationParams =
-        mt === "biz_video" ? bizVideoCaptureParamsForIngest(params, defaultAccountId, mode) : params;
-      let rowsForIngest: Record<string, unknown>[];
-      if (mt === "biz_video") {
-        rowsForIngest = [...(bizVideoIngestAttempt?.rows ?? [])];
-        if (summary.rows.length > 0) {
-          const seen = new Set<string>();
-          for (const r of rowsForIngest) {
-            const k = bizVideoRowDedupeKey(r);
-            if (k.length > 0) {
-              seen.add(k);
-            }
-          }
-          for (const r of summary.rows) {
-            const k = bizVideoRowDedupeKey(r);
-            if (k.length > 0) {
-              if (!seen.has(k)) {
-                rowsForIngest.push(r);
-                seen.add(k);
-              }
-            } else {
-              rowsForIngest.push(r);
-            }
-          }
-        }
-      } else if (summary.rows.length === 0) {
-        rowsForIngest = buildRowsFromCapturesByIngestTarget(mt, summary.captures, {
+          opsAccounts: bizVideoOpsAccounts,
           syncBatchId: `task_${task.id}`,
-          params: rowDerivationParams,
-        });
-      } else {
-        /** 勿与 `summary.rows` 共引用，避免入库前补全字段时改动 Runner 结案内存 */
-        rowsForIngest = [...summary.rows];
-      }
-      const bizVideoIngestBlockedHint =
-        bizVideoIngestAttempt?.merge_blocked_reason_zh ?? bizVideoIngestAttempt?.row_derivation_debug_zh;
-      if (
-        summary.ok &&
-        mt === "biz_video" &&
-        rowsForIngest.length === 0 &&
-        bizVideoIngestBlockedHint &&
-        capturesHaveBizVideoNetworkingPayload(summary.captures as Record<string, unknown>)
-      ) {
-        const reason = `视频入库推导未执行（已采到抖音接口数据）：${bizVideoIngestBlockedHint}`;
-        await patchTask(ctx, task.id, {
-          status: "failed",
-          error_code: "MISSING_DY_HOMEPAGE",
-          result_summary: {
-            reason,
+          rowsForIngest: coveragePlaceholder,
+          ingest: {
+            written: aggregatedIngest.ingest_written,
+            skipped: aggregatedIngest.ingest_skipped,
+            skip_details: aggregatedIngest.ingest_skip_details,
           },
         });
-        finishCloudTaskLedger(app, {
-          taskId: task.id,
-          ruleId,
-          ruleVersion: ruleVersionForLedger,
-          startedAt: cloudRunStartedAt,
-          ok: false,
-          errorCode: "MISSING_DY_HOMEPAGE",
-          summary: { reason },
-          ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
-        });
-        writeStatus(app, {
-          ...readStatus(app),
-          lastTaskId: task.id,
-          lastFinishedAt: new Date().toISOString(),
-          lastOk: false,
-          lastErrorCode: "MISSING_DY_HOMEPAGE",
-          lastErrorMessage: reason,
-          currentTaskId: null,
-          lastPolledAt: new Date().toISOString(),
-          lastPollErrorStatus: null,
-          lastPollErrorMessage: null,
-        });
-        return true;
-      }
-      if (mt === "biz_video" && rowsForIngest.length > 0) {
-        const modeFill = typeof params.mode === "string" ? params.mode.trim() : "";
-        if (modeFill !== "enterprise_all_accounts") {
-          /** 与 accountRunList 一致；captures 推导行也可能缺 account_id，不能仅在有 Runner 直出表行时补全 */
-          const rowAccountFallback =
-            accountRunList.length > 0 ? accountRunList[0]!.trim() : defaultAccountId;
-          if (rowAccountFallback.length > 0) {
-            rowsForIngest = rowsForIngest.map((r) => {
-              const aid = normalizeBizVideoParamAccountId(r.account_id);
-              if (aid.length > 0) {
-                return r;
-              }
-              return { ...r, account_id: rowAccountFallback };
-            });
-          }
+        if (cov.biz_video_coverage) {
+          rs.biz_video_coverage = cov.biz_video_coverage;
         }
-      }
-      if (mt === "biz_video" && rowsForIngest.length > 0) {
-        const modeRaw = typeof params.mode === "string" ? params.mode.trim() : "";
-        /**
-         * 单账号：按任务 params（homepage / unique / account_id）解析绑定，必要时补全行内 account_id。
-         * 主体全账号：行内 account_id 来自分桶采集；任务级 target_* / dy_homepage 可能陈旧或误填，
-         * 若仍走 resolve 会在「未匹配到员工」时误杀整批入库，故跳过绑定。
-         */
-        if (modeRaw !== "enterprise_all_accounts") {
-          const binding = await resolveBizVideoAccountIdForIngest(ctx, rowDerivationParams);
-          if (!binding.ok) {
-            const reason = `视频入库账号绑定失败：${binding.message}`;
-            await patchTask(ctx, task.id, {
-              status: "failed",
-              error_code: binding.code,
-              result_summary: {
-                reason,
-              },
-            });
-            finishCloudTaskLedger(app, {
-              taskId: task.id,
-              ruleId,
-              ruleVersion: ruleVersionForLedger,
-              startedAt: cloudRunStartedAt,
-              ok: false,
-              errorCode: binding.code,
-              summary: { reason },
-              ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
-            });
-            writeStatus(app, {
-              ...readStatus(app),
-              lastTaskId: task.id,
-              lastFinishedAt: new Date().toISOString(),
-              lastOk: false,
-              lastErrorCode: binding.code,
-              lastErrorMessage: reason,
-              currentTaskId: null,
-              lastPolledAt: new Date().toISOString(),
-              lastPollErrorStatus: null,
-              lastPollErrorMessage: null,
-            });
-            return true;
-          }
-          if (binding.accountId) {
-            rowsForIngest = rowsForIngest.map((r) => ({ ...r, account_id: binding.accountId }));
-          }
+        if (cov.biz_video_coverage_by_account) {
+          rs.biz_video_coverage_by_account = cov.biz_video_coverage_by_account;
         }
-      }
-      if (await bailIfUserCancelled()) {
-        return true;
-      }
-      const ingestRowsSnapshot = cloneFileRuleIngestRowsSnapshot(rowsForIngest);
-      const ingest = await postEmployeePersonalAuthFileRuleIngest(
-        ctx,
-        task.id,
-        resolvedIngest.ingestRuleLabel,
-        ingestRowsSnapshot,
-        resolvedIngest.mapping,
-      );
-      if (!ingest.ok) {
-        const reason = `入库失败：${ingest.message}`;
-        await patchTask(ctx, task.id, {
-          status: "failed",
-          error_code: "INTERNAL_ERROR",
-          result_summary: {
-            reason,
-          },
-        });
-        finishCloudTaskLedger(app, {
-          taskId: task.id,
-          ruleId,
-          ruleVersion: ruleVersionForLedger,
-          startedAt: cloudRunStartedAt,
-          ok: false,
-          errorCode: "INTERNAL_ERROR",
-          summary: { reason },
-          ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
-        });
-        writeStatus(app, {
-          ...readStatus(app),
-          lastTaskId: task.id,
-          lastFinishedAt: new Date().toISOString(),
-          lastOk: false,
-          lastErrorCode: "INTERNAL_ERROR",
-          lastErrorMessage: reason,
-          currentTaskId: null,
-          lastPolledAt: new Date().toISOString(),
-          lastPollErrorStatus: null,
-          lastPollErrorMessage: null,
-        });
-        return true;
-      }
-      ingestWritten = ingest.written;
-      if (typeof patchBody.result_summary === "object" && patchBody.result_summary) {
-        const rs = patchBody.result_summary as Record<string, unknown>;
-        rs.ingest_written = ingestWritten;
-        rs.ingest_skipped = ingest.skipped;
-        rs.rows_count = ingestRowsSnapshot.length;
-        if (ingest.target) rs.ingest_target = ingest.target;
-        if (ingest.skip_reasons) rs.ingest_skip_reasons = ingest.skip_reasons;
-        rs.ingest_skip_details = ingest.skip_details;
-        if (ingest.skip_details_truncated) {
-          rs.ingest_skip_details_truncated = true;
-        }
-        if (mt === "biz_video") {
-          try {
-            const cov = buildBizVideoCoverageForAggregate({
-              summaryCaptures: summary.captures as Record<string, unknown>,
-              taskParams: params,
-              defaultAccountId,
-              mode,
-              accountRunList,
-              opsAccounts: bizVideoOpsAccounts,
-              syncBatchId: `task_${task.id}`,
-              rowsForIngest: ingestRowsSnapshot,
-              ingest: {
-                written: ingest.written,
-                skipped: ingest.skipped,
-                skip_details: ingest.skip_details,
-              },
-            });
-            if (cov.biz_video_coverage) {
-              rs.biz_video_coverage = cov.biz_video_coverage;
-            }
-            if (cov.biz_video_coverage_by_account) {
-              rs.biz_video_coverage_by_account = cov.biz_video_coverage_by_account;
-            }
-            rs.biz_video_coverage_message_zh = cov.biz_video_coverage_message_zh;
-            if (bizVideoIngestAttempt?.merge_blocked_reason_zh && ingestRowsSnapshot.length > 0) {
-              rs.biz_video_merge_hint_zh = bizVideoIngestAttempt.merge_blocked_reason_zh;
-              onLogLine(`[runner-loop] ${bizVideoIngestAttempt.merge_blocked_reason_zh}`);
-            }
-            onLogLine(`[runner-loop] 抖音对账 ${cov.biz_video_coverage_message_zh}`);
-          } catch (e) {
-            onLogLine(
-              `[runner-loop] 抖音对账摘要构造失败（可忽略）：${e instanceof Error ? e.message : String(e)}`,
-            );
-          }
-        }
+        rs.biz_video_coverage_message_zh = cov.biz_video_coverage_message_zh;
+        onLogLine(`[runner-loop] 抖音对账 ${cov.biz_video_coverage_message_zh}`);
+      } catch (e) {
+        onLogLine(
+          `[runner-loop] 抖音对账摘要构造失败（可忽略）：${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
   }
@@ -1694,6 +1770,9 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
     lastErrorCode: summary.ok ? null : summary.error_code ?? "INTERNAL_ERROR",
     lastErrorMessage: summary.ok ? null : summary.error_message ?? null,
     currentTaskId: null,
+    /** B 套：任务结案后清空户级即推进度（详细户级结果已落到 task-center-runs.json 的 summary 字段） */
+    currentAccountProgress: null,
+    currentAccountIngestResults: [],
     lastPolledAt: new Date().toISOString(),
     lastPollErrorStatus: null,
     lastPollErrorMessage: null,

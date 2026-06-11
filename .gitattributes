@@ -1,0 +1,28 @@
+# Monorepo：关键路径检出 LF（本文件保持 LF）。若大批量调整换行约定，须在合适窗口并由维护者执行 `git add --renormalize .`。
+# README / AGENTS 对换行有更短说明。
+.github/**/*.yml text eol=lf
+.github/**/*.yaml text eol=lf
+
+**/package.json text eol=lf
+**/tsconfig*.json text eol=lf
+
+apps/client/src/**/*.ts text eol=lf
+apps/client/src/**/*.tsx text eol=lf
+apps/runner/src/**/*.ts text eol=lf
+apps/web/src/**/*.ts text eol=lf
+apps/web/src/**/*.tsx text eol=lf
+apps/api/src/**/*.ts text eol=lf
+
+packages/*/src/**/*.ts text eol=lf
+
+tools/playwright-field-probe/**/*.ts text eol=lf
+
+e2e-playwright-zhizhu-web/**/*.ts text eol=lf
+e2e-playwright-zhizhu-web/**/*.tsx text eol=lf
+e2e-playwright-zhizhu-web/**/*.mjs text eol=lf
+
+scripts/**/*.ts text eol=lf
+scripts/**/*.mjs text eol=lf
+
+# 一键部署脚本：bash 在 Linux/macOS 不接受 CRLF，必须强制 LF
+deploy/*.sh text eol=lf

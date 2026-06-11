@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 
 import type {
   AutomationRuleListDto,
+  AutomationRuleTrialAccountProgressDto,
   AutomationRuleTrialRunResultDto,
   FileRuleSkipDetailDto,
   PlaywrightBrowserProfileRecord,
@@ -14,6 +15,10 @@ import { Banner, Button, Field, Pill, SectionCard, TextInput } from "../ui";
 import { POLL_INTERVAL_MS, useAutomationRules } from "../hooks/useAutomationRules";
 import { useStatus } from "../hooks/useStatus";
 import { formatTs, withTimeout } from "../utils";
+import {
+  accountRunnerProgressPhaseLabel,
+  formatBizAccountIdForProgressUi,
+} from "../../accountRunnerProgressUi";
 
 type AutomationRulesPanelProps = {
   active: boolean;
@@ -461,6 +466,53 @@ export function AutomationRulesPanel({
   const [trialHeaded, setTrialHeaded] = useState<boolean>(true);
   const [trialCaptureTrace, setTrialCaptureTrace] = useState<boolean>(false);
   const [trialResult, setTrialResult] = useState<AutomationRuleTrialRunResultDto | null>(null);
+  /**
+   * B 套：试跑户级进度（与主进程 `automation-rule-trial-progress` IPC 对齐）。
+   * - `trialLiveProgress`：当前正在跑的户（running / posting）；null 表示无活跃户。
+   * - `trialAccountProgressList`：本次试跑的所有户结果（按 index 累积，结束态 `posted` / `failed` 才写）。
+   *   订阅一次 `onAutomationRuleTrialProgress`，进度事件按 `accountId+index` 去重更新到该数组。
+   */
+  const [trialLiveProgress, setTrialLiveProgress] = useState<AutomationRuleTrialAccountProgressDto | null>(
+    null,
+  );
+  const [trialAccountProgressList, setTrialAccountProgressList] = useState<
+    AutomationRuleTrialAccountProgressDto[]
+  >([]);
+  useEffect(() => {
+    /**
+     * 注册一次进度回调；preload 内为单 slot（"最新注册者为准"）。
+     * 卸载时 set null 解订，避免在面板隐藏期间仍堆积事件。
+     */
+    const api = window.zhizhu;
+    if (!api?.onAutomationRuleTrialProgress) {
+      return;
+    }
+    api.onAutomationRuleTrialProgress((p) => {
+      /** 活跃户始终覆盖（含 running / posting）；终止态（posted / failed）按 index 写入累积数组 */
+      if (p.phase === "posted" || p.phase === "failed") {
+        setTrialLiveProgress(null);
+      } else {
+        setTrialLiveProgress(p);
+      }
+      if (p.phase === "posted" || p.phase === "failed") {
+        setTrialAccountProgressList((prev) => {
+          /** 同 runId+index 已存在则覆盖；否则追加（保持顺序与 main 端 push 顺序一致） */
+          const existingIdx = prev.findIndex(
+            (x) => x.runId === p.runId && x.index === p.index,
+          );
+          if (existingIdx >= 0) {
+            const next = [...prev];
+            next[existingIdx] = p;
+            return next;
+          }
+          return [...prev, p];
+        });
+      }
+    });
+    return () => {
+      api.onAutomationRuleTrialProgress(null);
+    };
+  }, []);
   const [forceSyncBusy, setForceSyncBusy] = useState(false);
   const [pumpBusy, setPumpBusy] = useState(false);
   const dirtyRef = useRef(false);
@@ -960,7 +1012,16 @@ export function AutomationRulesPanel({
     }
     setTrialBusy(true);
     setTrialResult(null);
+    setTrialLiveProgress(null);
+    setTrialAccountProgressList([]);
     setStatus("开始执行…", "info");
+    /**
+     * 试跑 IPC 整批硬超时：用于"主进程完全 IPC 死锁"兜底，**不应**误杀正常多账号批次。
+     * 主进程已有按户 `hardTimeoutMs`（`taskRuleHardTimeout.ts`：FLOOR 5min、CEILING 45min、`ZHIZHU_TASK_RULE_HARD_TIMEOUT_MS` 可覆盖），
+     * 用户主动中止通过「停止执行」按钮 → `cancelTaskRuleRun`。\
+     * 历史上限 6min 对应文案"rule-run 超时（360s）"，在企业全账号串行批次（28+ 户）下会硬性误杀仍在跑的子进程，故抬到 2h。
+     */
+    const RULE_RUN_RENDERER_IPC_TIMEOUT_MS = 2 * 60 * 60_000;
     void withTimeout(
       window.zhizhu.trialRunAutomationRule({
         ruleId: selected.ruleId,
@@ -970,7 +1031,7 @@ export function AutomationRulesPanel({
         headed: trialHeaded,
         captureTrace: trialCaptureTrace,
       }),
-      6 * 60_000,
+      RULE_RUN_RENDERER_IPC_TIMEOUT_MS,
       "rule-run",
     )
       .then((r) => {
@@ -1079,10 +1140,30 @@ export function AutomationRulesPanel({
             {rules.runnerLoop?.lastPolledAt ? ` · ${formatTs(rules.runnerLoop.lastPolledAt)}` : ""}
           </Banner>
         ) : rules.runnerLoop?.lastPolledAt ? (
-          <p className="text-xs text-zz-muted">
-            最近拉取 {formatTs(rules.runnerLoop.lastPolledAt)}
-            {rules.runnerLoop.currentTaskId ? ` · 执行中 ${rules.runnerLoop.currentTaskId}` : ""}
-          </p>
+          <div className="space-y-1 text-xs text-zz-muted">
+            <p>
+              最近拉取 {formatTs(rules.runnerLoop.lastPolledAt)}
+              {rules.runnerLoop.currentTaskId ? ` · 执行中 ${rules.runnerLoop.currentTaskId}` : ""}
+            </p>
+            {rules.runnerLoop.currentTaskId && rules.runnerLoop.currentAccountProgress ? (
+              <p>
+                户 {(rules.runnerLoop.currentAccountProgress.index ?? 0) + 1}/
+                {rules.runnerLoop.currentAccountProgress.total ?? "?"}{" "}
+                {rules.runnerLoop.currentAccountProgress.accountName?.trim() ||
+                  rules.runnerLoop.currentAccountProgress.accountId ||
+                  ""}{" "}
+                · {accountRunnerProgressPhaseLabel(rules.runnerLoop.currentAccountProgress.phase)}
+                {rules.runnerLoop.currentAccountProgress.currentStepId != null &&
+                String(rules.runnerLoop.currentAccountProgress.currentStepId).length > 0
+                  ? ` · 步 ${String(rules.runnerLoop.currentAccountProgress.currentStepId)}${
+                      rules.runnerLoop.currentAccountProgress.stepPhase
+                        ? ` (${rules.runnerLoop.currentAccountProgress.stepPhase})`
+                        : ""
+                    }`
+                  : ""}
+              </p>
+            ) : null}
+          </div>
         ) : null}
       </SectionCard>
 
@@ -1198,6 +1279,8 @@ export function AutomationRulesPanel({
             onTrialStop={onTrialStop}
             trialBusy={trialBusy}
             trialResult={trialResult}
+            trialLiveProgress={trialLiveProgress}
+            trialAccountProgressList={trialAccountProgressList}
             onOpenTrace={onOpenTrace}
             onOpenCodegen={onOpenCodegen}
             onStopCodegen={onStopCodegen}
@@ -1251,6 +1334,8 @@ interface RuleEditorSectionProps {
   onTrialStop: () => void;
   trialBusy: boolean;
   trialResult: AutomationRuleTrialRunResultDto | null;
+  trialLiveProgress: AutomationRuleTrialAccountProgressDto | null;
+  trialAccountProgressList: AutomationRuleTrialAccountProgressDto[];
   onOpenTrace: () => void;
   onOpenCodegen: () => void;
   onStopCodegen: () => void;
@@ -1296,6 +1381,8 @@ function RuleEditorSection(props: RuleEditorSectionProps): ReactElement {
     onTrialStop,
     trialBusy,
     trialResult,
+    trialLiveProgress,
+    trialAccountProgressList,
     onOpenTrace,
     onOpenCodegen,
     onStopCodegen,
@@ -1617,6 +1704,12 @@ function RuleEditorSection(props: RuleEditorSectionProps): ReactElement {
             停止 Codegen
           </Button>
         </div>
+        {(trialBusy || trialLiveProgress || trialAccountProgressList.length > 0) && !trialResult ? (
+          <TrialLiveProgressCard
+            live={trialLiveProgress}
+            history={trialAccountProgressList}
+          />
+        ) : null}
         {trialResult ? (
           trialResult.ok ? (
             <div className="rounded-md border border-zz-border bg-zz-canvas p-3 text-sm">
@@ -1680,6 +1773,39 @@ function RuleEditorSection(props: RuleEditorSectionProps): ReactElement {
               ) : (
                 <p className="mt-2">本规则未配置入库。</p>
               )}
+              {Array.isArray(trialResult.summary.account_ingest_results) &&
+              trialResult.summary.account_ingest_results.length > 0 ? (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs font-semibold text-zz-muted">
+                    户级入库明细（共 {trialResult.summary.account_ingest_results.length} 户）
+                  </summary>
+                  <ul className="zz-meta-line mt-1 space-y-1">
+                    {trialResult.summary.account_ingest_results.map((r) => (
+                      <li
+                        key={`${r.account_id}:${r.index}`}
+                        className={r.ingest_ok ? "" : "text-red-600"}
+                      >
+                        <span className="font-mono">#{r.index + 1}</span>{" "}
+                        <span className="font-medium">{r.account_display_name?.trim() || "—"}</span>{" "}
+                        <span className="font-mono text-[10px] text-zz-muted">{r.account_id}</span>
+                        {" · "}
+                        {r.ingest_ok ? (
+                          <>
+                            写入 {r.written ?? 0} · 跳过 {r.skipped ?? 0}
+                          </>
+                        ) : (
+                          <>
+                            失败：{r.error_code ?? "—"}
+                            {r.error_message ? `（${r.error_message}）` : ""}
+                          </>
+                        )}
+                        {" · "}
+                        {(r.duration_ms / 1000).toFixed(1)}s
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
               <p className="zz-meta-line mt-1">表格行数：{trialResult.summary.rows.length}</p>
               <p className="zz-meta-line">captures：{Object.keys(trialResult.summary.captures).join(", ") || "—"}</p>
               <ul className="mt-2 list-inside list-disc space-y-1 text-sm">
@@ -2105,6 +2231,82 @@ function SelectorAndPrimitiveEditor({
           )}
         </Field>
       ) : null}
+    </div>
+  );
+}
+
+/** 试跑实时进度卡：展示 m/n 当前活跃户 + 历史户级结果（与 RunnerLoopStatus.currentAccountProgress 同语义）。 */
+function TrialLiveProgressCard(props: {
+  live: AutomationRuleTrialAccountProgressDto | null;
+  history: AutomationRuleTrialAccountProgressDto[];
+}): ReactElement {
+  const { live, history } = props;
+  /** 当前进度：优先 live；live 为 null（含已完成）取最后一条 history */
+  const last = history.length > 0 ? history[history.length - 1] : null;
+  const display = live ?? last;
+  const total = display?.total ?? 0;
+  /** 已结束（posted+failed）的户数 */
+  const finishedCount = history.length;
+  const successCount = history.filter((x) => x.phase === "posted").length;
+  const failedCount = history.filter((x) => x.phase === "failed").length;
+  return (
+    <div className="rounded-md border border-zz-border bg-zz-canvas p-3 text-sm">
+      <header className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="font-semibold">
+          实时进度：{Math.min(finishedCount + (live ? 1 : 0), total)} / {total || "?"}
+          <span className="ml-2 text-xs text-zz-muted">
+            成功 {successCount} · 失败 {failedCount}
+          </span>
+        </p>
+        {live ? (
+          <p className="zz-meta-line">
+            当前 #{live.index + 1}/{live.total} ·{" "}
+            {(live.accountName && live.accountName.trim()) || formatBizAccountIdForProgressUi(live.accountId)}{" "}
+            · <span className="font-medium">{accountRunnerProgressPhaseLabel(live.phase)}</span>
+            {live.currentStepId != null && String(live.currentStepId).length > 0 ? (
+              <span className="ml-1 text-xs text-zz-muted">
+                （步 {String(live.currentStepId)}
+                {live.stepPhase ? ` ${live.stepPhase}` : ""}
+                {live.stepError ? ` — ${live.stepError.slice(0, 120)}${live.stepError.length > 120 ? "…" : ""}` : ""}）
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+      </header>
+      {history.length > 0 ? (
+        <ul className="zz-meta-line mt-2 max-h-64 space-y-1 overflow-auto">
+          {history.map((p) => (
+            <li
+              key={`${p.runId}:${p.index}`}
+              className={`flex flex-wrap items-baseline gap-2 ${
+                p.phase === "failed" ? "text-red-600" : ""
+              }`}
+            >
+              <span className="font-mono">#{p.index + 1}</span>{" "}
+              <span className="font-medium">
+                {(p.accountName && p.accountName.trim()) || "—"}
+              </span>
+              {p.accountId ? (
+                <span className="ml-1 truncate font-mono text-[10px] text-zz-muted">{p.accountId}</span>
+              ) : null}
+              <span>{accountRunnerProgressPhaseLabel(p.phase)}</span>
+              {p.phase === "posted" ? (
+                <span>
+                  写入 {p.written ?? 0} · 跳过 {p.skipped ?? 0}
+                </span>
+              ) : null}
+              {p.phase === "failed" && p.error ? (
+                <span className="text-xs">{p.error}</span>
+              ) : null}
+              {typeof p.durationMs === "number" ? (
+                <span className="text-xs">{(p.durationMs / 1000).toFixed(1)}s</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="zz-meta-line mt-2">正在准备…</p>
+      )}
     </div>
   );
 }

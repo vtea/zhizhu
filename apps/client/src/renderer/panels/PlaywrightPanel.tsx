@@ -303,7 +303,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
               刷新列表
             </Button>
             <Button variant="secondary" onClick={onStop}>
-              停止可视化 Chromium
+              停止可视化浏览器
             </Button>
             <Button
               variant="secondary"
@@ -311,7 +311,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
               isLoading={forceSyncBusy}
               title="把本机所有 Playwright 配置整表上传到云端，覆盖该设备已登记行（需已绑定设备）"
             >
-              立即同步到云端
+              同步云端
             </Button>
           </>
         }
@@ -351,9 +351,9 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
                       {isDef ? <Pill tone="info">默认浏览器</Pill> : null}
                       <span className={isDef ? "ml-2" : ""}>{p.label}</span>
                     </h3>
-                    <span className="zz-meta-line">浏览器环境标识：{p.slug}</span>
+                    <span className="zz-meta-line">浏览器标识：{p.slug}</span>
                   </header>
-                  <p className="zz-meta-line mt-1">客户端内部编号（UUID）：{p.id}</p>
+                  <p className="zz-meta-line mt-1">客户端编号（UUID）：{p.id}</p>
                   <p
                     className="zz-meta-line mt-1"
                     title={`创建时间 ${formatTs(p.createdAt)}；最近更新 ${formatTs(p.updatedAt)}`}
@@ -425,7 +425,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
             </Field>
             <Field
               label="默认起始地址（可选）"
-              hint="例如控制台内相对路径 /tenant/… 或外链 https://…；留空则控制台首页"
+              hint="https://…；留空则控制台首页"
             >
               {({ id, describedBy }) => (
                 <TextInput
@@ -451,7 +451,7 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
 
         {modal.kind === "edit" ? (
           <div className="flex flex-col gap-3">
-            <p className="zz-meta-line text-sm">客户端内部编号（UUID）：{modal.draft.id}</p>
+            <p className="zz-meta-line text-sm">编号（UUID）：{modal.draft.id}</p>
             <Field label="显示名称">
               {({ id, describedBy }) => (
                 <TextInput
@@ -506,10 +506,8 @@ export function PlaywrightPanel({ active }: PlaywrightPanelProps) {
         ) : null}
       </Modal>
 
-      <Banner kind="info">
-        使用系统 Node 运行 <code className="font-mono">@zhizhu/runner</code> 的{" "}
-        <code className="font-mono">headed-login</code>；须已安装 Playwright Chromium。同一时间仅允许打开一个可视化会话；托盘与菜单「Playwright
-        可视化浏览器」可优先使用已设为默认的浏览器配置打开。
+      <Banner kind="info">    
+        须已安装 Playwright Chromium。同一时间仅允许打开一个浏览器；「可视化浏览器」可优先使用已设为默认的浏览器配置打开。
       </Banner>
     </div>
   );

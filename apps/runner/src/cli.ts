@@ -14,6 +14,7 @@ import {
 import { validateRuleBody, type RuleBody } from "@zhizhu/playwright-rule-schema";
 
 import { buildCaptureDiagnostics } from "./ruleRunner/captureDiagnostics";
+import { projectCapturesForBizVideoRunnerOutput } from "./ruleRunner/captureProjection";
 import { runRule } from "./ruleRunner";
 import { isTransientNetNavError, sleepMs } from "./ruleRunner/transientNavErrors";
 import { loadFileRuleBundle, loadOptionalFileRuleSidecars } from "./fileRuleSource";
@@ -634,13 +635,26 @@ async function cmdTaskRule(): Promise<void> {
   if ("error_message" in result && result.error_message) {
     summary.error_message = result.error_message;
   }
+  /**
+   * 在序列化前对已知**视频类**抓包键做字段白名单投影：抖音 `aweme.video.bit_rate` / `play_addr.url_list`
+   * 等多 CDN 多分辨率字段单条常 50–200KB，`accumulate=true` 滚动多页累加后单键易破 10MB，
+   * 整行 JSON 通过 stdout 管道到 Electron 主进程的 readline 时在 Windows 下出现整行截断
+   * （表现为 `Runner done 行 JSON 无法解析（可能因单行过大或截断）`）。
+   * 此处投影仅保留 `employeePersonalAuthFileIngest` / `bizVideoCaptureCoverage` 实际读取的字段，
+   * 入库结果不变；其它键（线索 / 高潜）原样透传。
+   */
+  const capturesForOutput = projectCapturesForBizVideoRunnerOutput(
+    result.captures as Record<string, unknown>,
+  );
+  /** 诊断仍按投影后的 `aweme_list.length` 计算——长度信息保留，统计值不变。 */
+  const diagnostics = buildCaptureDiagnostics(capturesForOutput);
   let doneLine: string;
   try {
     doneLine = `${JSON.stringify({
       ok: result.ok,
       rows: result.rows,
-      captures: result.captures,
-      capture_diagnostics: buildCaptureDiagnostics(result.captures as Record<string, unknown>),
+      captures: capturesForOutput,
+      capture_diagnostics: diagnostics,
       summary,
       trace_path: tracePath,
       file_rule_meta: fileRuleMeta,

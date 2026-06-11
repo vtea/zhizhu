@@ -1,26 +1,30 @@
 {
   "name": "@zhizhu/client",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "version": "0.1.0",
   "description": "知竹本地客户端（Electron）：数据面入口，用系统浏览器打开 Web 控制台",
   "type": "commonjs",
   "main": "dist/main.js",
   "scripts": {
     "build:client": "npm run build",
-    "build": "npm --prefix ../../packages/playwright-rule-schema run build && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && npm run build:css && npm run build:renderer",
+    "build": "npm --prefix ../../packages/playwright-rule-schema run build && npm --prefix ../../packages/biz-account-auth-status run build && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && npm run build:css && npm run build:renderer",
     "build:css": "tailwindcss -i src/renderer/styles.css -o dist/styles.css --minify",
     "build:renderer": "esbuild src/renderer/main.tsx --bundle --format=iife --platform=browser --outfile=dist/renderer.js --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --sourcemap",
     "watch": "tsc -p tsconfig.json -w",
     "watch:css": "tailwindcss -i src/renderer/styles.css -o dist/styles.css --watch",
     "watch:renderer": "esbuild src/renderer/main.tsx --bundle --format=iife --platform=browser --outfile=dist/renderer.js --jsx=automatic --loader:.tsx=tsx --loader:.ts=ts --sourcemap --watch",
-    "test": "tsx --test src/taskRuleHardTimeout.unit.test.ts src/bizVideoDouyinAnchorInfer.unit.test.ts",
+    "test": "tsx --test \"src/**/*.unit.test.ts\"",
     "start": "npm run build && electron .",
     "dev": "npm run start",
     "pack:mac": "npm run build && electron-builder --mac dmg --publish never",
-    "pack:win": "npm run build && electron-builder --win nsis --publish never",
+    "pack:win": "npm run build && node ../../scripts/electron-builder-cache-warm.mjs && electron-builder --win nsis --publish never",
     "pack:all": "npm run build && electron-builder --mac dmg --win nsis --publish never"
   },
   "dependencies": {
+    "@zhizhu/biz-account-auth-status": "*",
     "@zhizhu/playwright-shell-contract": "*",
     "@zhizhu/playwright-rule-schema": "*",
     "@zhizhu/runner": "0.1.0",

@@ -24,7 +24,7 @@ import { useSearchParams } from "react-router-dom";
 
 const PAGE_SIZE = 12;
 
-type LeadQuickRange = "today" | "7d" | "30d";
+type LeadQuickRange = "yesterday" | "7d" | "30d";
 
 type LeadEditDraft = {
   id: string;
@@ -45,7 +45,10 @@ function formatYmd(d: Date): string {
 function rangeForPreset(preset: LeadQuickRange): { from: string; to: string } {
   const end = new Date();
   const start = new Date(end);
-  if (preset === "7d") {
+  if (preset === "yesterday") {
+    start.setDate(end.getDate() - 1);
+    end.setDate(end.getDate() - 1);
+  } else if (preset === "7d") {
     start.setDate(end.getDate() - 6);
   } else if (preset === "30d") {
     start.setDate(end.getDate() - 29);
@@ -106,14 +109,14 @@ export function LeadsPage() {
 
   const [localFrom, setLocalFrom] = useState("");
   const [localTo, setLocalTo] = useState("");
-  const [quickRange, setQuickRange] = useState<LeadQuickRange>("today");
+  const [quickRange, setQuickRange] = useState<LeadQuickRange>("yesterday");
   const [editLead, setEditLead] = useState<LeadEditDraft | null>(null);
   const [mutErr, setMutErr] = useState<string | null>(null);
 
   useEffect(() => {
     const noRangeInUrl = !search.get("from") && !search.get("to");
     if (noRangeInUrl) {
-      const r = rangeForPreset("today");
+      const r = rangeForPreset("yesterday");
       const sp = new URLSearchParams(search);
       sp.set("from", r.from);
       sp.set("to", r.to);
@@ -126,10 +129,10 @@ export function LeadsPage() {
     setLocalFrom(from);
     setLocalTo(to);
     if (from && to) {
-      const today = rangeForPreset("today");
+      const yesterday = rangeForPreset("yesterday");
       const d7 = rangeForPreset("7d");
       const d30 = rangeForPreset("30d");
-      if (from === today.from && to === today.to) setQuickRange("today");
+      if (from === yesterday.from && to === yesterday.to) setQuickRange("yesterday");
       else if (from === d7.from && to === d7.to) setQuickRange("7d");
       else if (from === d30.from && to === d30.to) setQuickRange("30d");
     }
@@ -416,8 +419,8 @@ export function LeadsPage() {
           应用
         </Button>
         <div className="flex flex-wrap gap-2">
-          <Button variant={quickRange === "today" ? "primary" : "secondary"} size="sm" onClick={() => applyQuickRange("today")}>
-            当天
+          <Button variant={quickRange === "yesterday" ? "primary" : "secondary"} size="sm" onClick={() => applyQuickRange("yesterday")}>
+            昨天
           </Button>
           <Button variant={quickRange === "7d" ? "primary" : "secondary"} size="sm" onClick={() => applyQuickRange("7d")}>
             7天

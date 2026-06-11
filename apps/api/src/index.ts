@@ -37,6 +37,8 @@ import { publicRegisterAllowed } from "./tenantEntitlement.js";
 import { findLocalCoverFileForRead } from "./videoCoverLocalStorage.js";
 
 const port = Number(process.env.PORT ?? "3000");
+/** 默认 127.0.0.1；容器或需对外监听时设为 0.0.0.0（见根目录 `.env.example`） */
+const listenHost = process.env.API_LISTEN_HOST?.trim() || "127.0.0.1";
 
 const DEFAULT_CORS_DEV = ["http://127.0.0.1:5173", "http://localhost:5173"] as const;
 
@@ -1373,6 +1375,52 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    const repointDetachedRoute = sub.match(/^\/accounts\/([^/]+)\/([^/]+)\/repoint-detached-placeholder$/);
+    if (req.method === "POST" && repointDetachedRoute) {
+      if (!canManageTenantAdmin(auth.payload)) {
+        sendJson(res, 403, { error: "需要 tenant_admin", code: "FORBIDDEN" });
+        return;
+      }
+      try {
+        const platform = decodeURIComponent(repointDetachedRoute[1] ?? "");
+        const accountId = decodeURIComponent(repointDetachedRoute[2] ?? "");
+        const body = (await readJsonBody(req)) as Record<string, unknown>;
+        const password = typeof body.password === "string" ? body.password : "";
+        const toRaw = typeof body.to_account_id === "string" ? body.to_account_id : "";
+        const toAccountId = toRaw.trim();
+        if (!password.trim()) {
+          sendJson(res, 400, { error: "请输入登录密码以确认迁移", code: "PASSWORD_REQUIRED" });
+          return;
+        }
+        if (!toAccountId) {
+          sendJson(res, 400, { error: "请选择目标真实账号 to_account_id" });
+          return;
+        }
+        const subJwt = typeof auth.payload?.sub === "string" ? auth.payload.sub : "";
+        const v = await consoleAuth.verifyConsoleUserPassword(tenantId, subJwt, password);
+        if (!v.ok) {
+          const code =
+            v.error === "当前密码错误"
+              ? "PASSWORD_INVALID"
+              : v.error === "未找到控制台用户"
+                ? "USER_NOT_FOUND"
+                : "AUTH_FAILED";
+          sendJson(res, 401, { error: v.error, code });
+          return;
+        }
+        const out = await writes.repointDetachedPlaceholderBizAccount(tenantId, platform, accountId, toAccountId);
+        if (!out.ok) {
+          sendJson(res, 400, { error: out.error });
+          return;
+        }
+        sendJson(res, 200, { ok: true, repointed: out.repointed });
+        return;
+      } catch (e) {
+        sendBusinessOrInternalError(res, e);
+        return;
+      }
+    }
+
     const patchAcct = sub.match(/^\/accounts\/([^/]+)\/([^/]+)$/);
     if (req.method === "PATCH" && patchAcct) {
       if (!canManageTenantAdmin(auth.payload)) {
@@ -1450,6 +1498,12 @@ const server = http.createServer(async (req, res) => {
         "comment_desc",
         "favorite_desc",
         "share_desc",
+        "duration_desc",
+        "complete_desc",
+        "lead_desc",
+        "placement_status_asc",
+        "placement_status_desc",
+        "sync_desc",
       ]);
       const sort = sortRaw && sortAllowed.has(sortRaw) ? sortRaw : "publish_desc";
       const out = await tenantApi.listVideos(tenantId, page, pageSize, {
@@ -2341,8 +2395,8 @@ attachWs(server);
 
 assertCriticalExportsAtBoot();
 
-server.listen(port, "127.0.0.1", () => {
+server.listen(port, listenHost, () => {
   console.log(
-    `@zhizhu/api http://127.0.0.1:${port}  REST + WS /api/v1/ws?token=…  认证：/api/v1/auth/login、/api/v1/auth/register`,
+    `@zhizhu/api http://${listenHost}:${port}  REST + WS /api/v1/ws?token=…  认证：/api/v1/auth/login、/api/v1/auth/register`,
   );
 });

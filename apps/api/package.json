@@ -1,20 +1,26 @@
 {
   "name": "@zhizhu/api",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "version": "0.1.0",
   "description": "知竹 API：PostgreSQL 连接与健康检查（占位）",
   "type": "commonjs",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/run-tsc.cjs",
     "start": "node dist/index.js",
+    "migrate:prod": "node dist/migrate.js",
     "dev": "tsx watch src/index.ts",
     "migrate": "tsx src/migrate.ts",
     "migrate:api": "tsx src/migrate.ts",
-    "test": "tsx --test src/deviceJwt.contract.test.ts src/playwrightShellContract.contract.test.ts src/dbErrorClassify.contract.test.ts src/automationRuleDraftSync.contract.test.ts src/consoleAuthPassword.contract.test.ts src/detachAndDeleteBizAccount.contract.test.ts src/tenantEntitlement.unit.test.ts src/enterpriseScopePick.contract.test.ts src/fileRuleIngestDispatch.contract.test.ts src/consoleWrites.skipDetails.unit.test.ts src/bizVideoIngestNormalize.unit.test.ts",
+    "merge:leads-enterprise": "tsx scripts/merge-leads-enterprise.ts",
+    "test": "tsx --test src/deviceJwt.contract.test.ts src/playwrightShellContract.contract.test.ts src/dbErrorClassify.contract.test.ts src/automationRuleDraftSync.contract.test.ts src/consoleAuthPassword.contract.test.ts src/detachAndDeleteBizAccount.contract.test.ts src/repointDetachedPlaceholder.contract.test.ts src/tenantEntitlement.unit.test.ts src/enterpriseScopePick.contract.test.ts src/fileRuleIngestDispatch.contract.test.ts src/consoleWrites.skipDetails.unit.test.ts src/bizVideoIngestNormalize.unit.test.ts src/runnerCaptureProjection.unit.test.ts src/employeePersonalAuthIngest.unit.test.ts src/adPlacementStatus.unit.test.ts",
     "verify:login": "bash scripts/verify-platform-login.sh"
   },
   "dependencies": {
+    "@zhizhu/biz-account-auth-status": "*",
     "@zhizhu/playwright-shell-contract": "*",
     "@zhizhu/playwright-rule-schema": "*",
     "@types/ws": "^8.18.1",

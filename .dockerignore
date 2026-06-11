@@ -1,0 +1,28 @@
+# 构建上下文瘦身（Docker）
+.env
+.env.*
+!.env.docker.example
+node_modules
+**/node_modules
+.git
+.cursor
+**/.git
+**/*.md
+!README.md
+
+**/dist
+coverage
+.nyc_output
+*.log
+npm-debug.log*
+
+# 本地与测试产物
+apps/client/dist
+apps/client/out
+apps/client/release
+**/playwright-report
+**/test-results
+**/.vite
+
+# 可选：若构建仅需 API/Web，可取消下行注释以进一步减小上下文（须同步调整 Dockerfile 仅 COPY 所需路径）
+# tools/playwright-field-probe

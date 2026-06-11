@@ -11,8 +11,54 @@ import { extractDouyinUserSecUidFromCanonicalHomepageUrl } from "./douyinUserHom
 import { readClientState } from "./clientState";
 import { getApiBaseUrl } from "./config";
 import type { FileRuleSkipDetailDto } from "./sharedTypes.js";
+import {
+  normalizeDouyinConferAuthStatus,
+  pickDouyinConferListUserAuthRaw,
+  shouldPreferIncomingAuthStatus,
+} from "@zhizhu/biz-account-auth-status";
+
+export { normalizeDouyinConferAuthStatus as normalizePersonalAuthApiStatus } from "@zhizhu/biz-account-auth-status";
 
 export const TENANT_DEVICE_HTTP_TIMEOUT_MS = 28_000;
+
+function safeJsonStringifyForDebug(value: unknown): string {
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(value, (_k, v) => {
+      if (typeof v === "object" && v !== null) {
+        if (seen.has(v)) {
+          return "[Circular]";
+        }
+        seen.add(v);
+      }
+      return v;
+    });
+  } catch {
+    return String(value);
+  }
+}
+
+function mergeEmployeePersonalAuthRowPreferIncomingAuthCoalesceDisplay(
+  prev: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...incoming };
+  out.auth_status = incoming.auth_status;
+  out.authorized_at = incoming.authorized_at ?? prev.authorized_at;
+  out.expires_at = incoming.expires_at ?? prev.expires_at;
+  out.dy_leads_enterprise_id = incoming.dy_leads_enterprise_id ?? prev.dy_leads_enterprise_id;
+  out.dy_leads_enterprise_name = incoming.dy_leads_enterprise_name ?? prev.dy_leads_enterprise_name;
+
+  const strKeys = ["dy_display_name", "dy_unique_id", "dy_user_url", "dy_avatar_url"] as const;
+  for (const k of strKeys) {
+    const inc = incoming[k];
+    const hasInc = typeof inc === "string" && inc.trim().length > 0;
+    if (!hasInc && typeof prev[k] === "string" && prev[k].trim().length > 0) {
+      out[k] = prev[k];
+    }
+  }
+  return out;
+}
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -351,7 +397,10 @@ export function buildRowsFromEmployeePersonalAuthCaptures(
    * - 单对象（旧规则、accumulate=false）：直接当成"一页"。
    * - 数组（accumulate=true，翻页累加）：按出现顺序遍历每页 payload。
    *
-   * 用户去重以全局 `user_id` 为主键，首次出现保留；缺少 `user_id` 则回退 `aweme_id` / `sec_uid`。
+   * 用户去重以全局 `user_id` 为主键；缺少 `user_id` 则回退 `aweme_id` / `sec_uid`。
+   * 同键多行（翻页重复等）时取**更严格的授权态**（如 revoked 覆盖 active），见 `@zhizhu/biz-account-auth-status`。
+   * 覆盖时：授权相关字段以新行为准；昵称/链接等展示字段若新行为空则保留旧值。
+   * 调试：环境变量 `ZHIZHU_DEBUG_CONFER_AUTH_STATUS=1` 时向 stderr 打印每行原始 picked 与归一化结果。
    */
   const rawPayload = captures.employee_personal_auth_payload;
   const payloads: Record<string, unknown>[] = [];
@@ -422,9 +471,13 @@ export function buildRowsFromEmployeePersonalAuthCaptures(
     return "";
   }
 
-  const seen = new Set<string>();
-  const out: Record<string, unknown>[] = [];
+  const mergedByKey = new Map<string, Record<string, unknown>>();
   for (const u of allUsers) {
+    const picked = pickDouyinConferListUserAuthRaw(u);
+    const authStatusCanon = normalizeDouyinConferAuthStatus(picked);
+    if (process.env.ZHIZHU_DEBUG_CONFER_AUTH_STATUS === "1") {
+      console.debug("[zhizhu][confer-auth]", safeJsonStringifyForDebug({ picked, authStatusCanon }));
+    }
     const uid =
       typeof u.user_id === "string"
         ? u.user_id.trim()
@@ -444,14 +497,10 @@ export function buildRowsFromEmployeePersonalAuthCaptures(
     if (!accountId) {
       continue;
     }
-    /** 去重主键优先 user_id；缺失时退化为 accountId 串以避免完全相同的占位记录互相覆盖 */
+    /** 去重主键优先 user_id；缺失时退化为 accountId 串 */
     const dedupKey = uid || `__no_uid__:${accountId}`;
-    if (seen.has(dedupKey)) {
-      continue;
-    }
-    seen.add(dedupKey);
     const homepage = dyUserHomepageFromPersonalAuthUser(u);
-    out.push({
+    const row: Record<string, unknown> = {
       account_id: accountId,
       dy_unique_id:
         typeof u.aweme_id === "string" && u.aweme_id.toString().trim().length > 0
@@ -465,14 +514,20 @@ export function buildRowsFromEmployeePersonalAuthCaptures(
         u.avatar && typeof u.avatar === "object" && Array.isArray((u.avatar as Record<string, unknown>).url_list)
           ? (((u.avatar as Record<string, unknown>).url_list as unknown[]).find((x) => typeof x === "string") as string | undefined) ?? ""
           : "",
-      auth_status: u.status == null ? "" : String(u.status),
+      auth_status: authStatusCanon,
       authorized_at: toIsoFromUnixSeconds(u.create_time),
       expires_at: toIsoFromUnixSeconds(u.expire_time),
       dy_leads_enterprise_id: fallbackGroup || null,
       dy_leads_enterprise_name: enterpriseName || null,
-    });
+    };
+    const prev = mergedByKey.get(dedupKey);
+    if (!prev) {
+      mergedByKey.set(dedupKey, row);
+    } else if (shouldPreferIncomingAuthStatus(authStatusCanon, String(prev.auth_status ?? ""))) {
+      mergedByKey.set(dedupKey, mergeEmployeePersonalAuthRowPreferIncomingAuthCoalesceDisplay(prev, row));
+    }
   }
-  return out;
+  return [...mergedByKey.values()];
 }
 
 function toLocalYmdFromMs(v: unknown): string | null {

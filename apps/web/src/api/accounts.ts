@@ -150,3 +150,23 @@ export async function deleteBizAccountWithConfirm(
     },
   );
 }
+
+/** 将解绑占位行上的线索/视频等迁到真实账号并删除占位（须 tenant_admin + 登录密码） */
+export async function repointDetachedPlaceholderAccount(
+  tenantId: string,
+  platform: string,
+  placeholderAccountId: string,
+  body: { password: string; to_account_id: string },
+): Promise<{ ok: boolean; repointed?: BizAccountAssociationCounts }> {
+  const base = getApiBaseUrl();
+  if (!base) {
+    throw new Error("未配置 VITE_API_BASE_URL");
+  }
+  return apiPostJson<{ ok: boolean; repointed?: BizAccountAssociationCounts }>(
+    `/api/v1/tenants/${encodeURIComponent(tenantId)}/accounts/${encodeURIComponent(platform)}/${encodeURIComponent(placeholderAccountId)}/repoint-detached-placeholder`,
+    {
+      password: body.password,
+      to_account_id: body.to_account_id,
+    },
+  );
+}

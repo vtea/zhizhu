@@ -128,7 +128,7 @@
 | `dy_avatar_url` | 两轨 | 同包 / 矩阵行 | `GET .../bff/account`；**P2** | **`$.data.accountInfo.avatarUrl`** |
 | `authorized_at` | 个人轨 | **P3** 列表或详情 | **§1 P3** | **待抓** |
 | `expires_at` | 个人轨 | **P3** | 同上 | **待抓** |
-| `auth_status` | 个人轨 | **P3** | 同上 | **待抓** |
+| `auth_status` | 个人轨 | **P3** | 同上 | **待抓**；归一化与 legacy 枚举见 npm **`@zhizhu/biz-account-auth-status`**、`apps/playwright/脚本/employee-personal-auth-sync/README.md` 附录 |
 | `ops_status` | 两轨 | **P2** 列表枚举为主 | **§1 P2** | **待抓** |
 
 ---

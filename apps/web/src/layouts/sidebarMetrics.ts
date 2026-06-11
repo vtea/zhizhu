@@ -1,3 +1,7 @@
-/** 侧栏宽度：与 `ConsoleLayout` / `SidebarAccountPanel` 的 `--sidebar-w` 同源；其它文件中若手写同义宽度请与此保持同步 */
-export const CONSOLE_SIDEBAR_WIDTH_REM = 15;
+export const CONSOLE_SIDEBAR_WIDTH_REM = 12;
+export const CONSOLE_SIDEBAR_COLLAPSED_WIDTH_REM = 4.25;
 export const PROFILE_PANEL_WIDTH_REM = 22;
+
+export function consoleSidebarWidthRem(collapsed: boolean): number {
+  return collapsed ? CONSOLE_SIDEBAR_COLLAPSED_WIDTH_REM : CONSOLE_SIDEBAR_WIDTH_REM;
+}

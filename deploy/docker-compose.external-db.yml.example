@@ -1,0 +1,17 @@
+# 外置 PostgreSQL（RDS 等）时与根 docker-compose.yml 合并使用：
+#
+#   1. 在仓库根 .env 设置 DATABASE_URL=postgresql://user:pass@your-rds:5432/zhizhu?sslmode=require
+#   2. 删除或注释根 compose 中的 postgres 服务及 api.depends_on.postgres
+#   3. 或复制本文件为 docker-compose.override.yml 并去掉 postgres：
+#
+# 方式 A（推荐）：编辑 docker-compose.yml，移除 postgres 整块与 api.depends_on.postgres
+#
+# 方式 B：仅 override（需 Compose 支持；postgres 仍会启动除非用 profiles）
+#   cp deploy/docker-compose.external-db.yml.example docker-compose.override.yml
+#   并手动从 docker-compose.yml 删除 postgres 服务
+
+services:
+  api:
+    depends_on: {}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}

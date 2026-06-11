@@ -55,7 +55,25 @@ npm run build   # 输出 dist/
 npm run start     # 编译并启动 Electron
 ```
 
+### 单元测试
+
+`apps/client/package.json` 中 **`scripts.test`** 定义为 `tsx --test "src/**/*.unit.test.ts"`（工作目录须为 `apps/client`），因此**只会**收集 `apps/client/src/**/*.unit.test.ts`；新单测请沿用 `*.unit.test.ts` 后缀，否则默认命令不会执行到。
+
+- 在 **`apps/client`** 下：执行 **`npm test`**。
+- 在**仓库根**（workspaces）：执行 **`npm test -w @zhizhu/client`**（与 CI、Windows 一致，均依赖同一 glob）。
+
+需 **Node ≥22**（见该包 `engines`）。
+
+**CI（GitHub Actions）**：配置文件 **[`.github/workflows/client-unit-test.yml`](../../.github/workflows/client-unit-test.yml)**。
+
+- **pull_request**：只要本次改动里**至少有一个文件**不匹配 `paths-ignore`（当前为 `docs/**`），就会运行；**全部**改动均落在 `docs/**` 时 GitHub **不触发**本 workflow（不是失败）。若 PR 顺带改了根 README、任一 `apps/*`、`packages/*` 等，**仍会运行**。
+- **push**：在 YAML 所列默认分支上，仅当改动命中其中的 `paths`（含 **`apps/client` / `apps/runner` / `apps/web` / `apps/api`**、所列 **`packages/**`**、`tools/playwright-field-probe`、`e2e-playwright-zhizhu-web`、仓库根 **`scripts/**`**、`package.json` / `package-lock.json`、**本 workflow 文件**）时触发。
+- **workflow_dispatch**：在 Actions → 本 workflow → Run workflow **手动运行**，不依赖上述 paths。
+- Job 使用 **Node 22**（与本包及根目录 `engines` / workflow 对齐；版本策略变更时请同步本节）。单次 run 上 **`concurrency` + cancel-in-progress** 可能取消同一分支上上一轮尚未结束的 run。
+
 先在一终端运行 Web：`cd apps/web && npm run dev`，再启动本客户端；**另需** `apps/api` 已提供设备绑定路由且可访问时，绑定码才会成功（否则壳页会显示 API 返回的错误信息）。
+
+若启动时报 **`Electron failed to install correctly`**：`electron` 的 postinstall 未把二进制下载完整（网络中断、杀软拦截等）。在 **`apps/client`** 下执行 `node node_modules/electron/install.js`（需能访问 Electron 官方下载源）；仍失败可删除 **`apps/client/node_modules/electron`**（必要时连同仓库根 **`node_modules`** 清理后在根目录 **`npm install`**）。
 
 ## 打包（无签名测试包）
 
@@ -95,6 +113,24 @@ npm run pack:win
 - **`ZHIZHU_API_BASE_URL`**：API 根 URL（无则按 Web 端口推导本地 API）。
 - **`ZHIZHU_WSS_URL`**：WSS 根 URL（可选；有 `deviceId` 时主进程尝试连接，首版仅心跳占位）。
 
+### Windows 上的 symlink 权限提示
+
+**现象**：`npm run pack:win` 报 `ERROR: Cannot create symbolic link : 客户端没有所需的特权`（CMD/旧版 PowerShell 因 GBK 显示为 `?ͻ???...` 一堆乱码），随后 electron-builder 自动重试 4 次后失败。
+
+**根因**：electron-builder@24 下载 `winCodeSign-2.6.0.7z` 后用 `7za.exe` 解压，包内含两条 **macOS** 用的符号链接（`darwin/10.12/lib/libcrypto.dylib`、`darwin/10.12/lib/libssl.dylib`）；Windows 非管理员账户缺 `SeCreateSymbolicLinkPrivilege`，重建 symlink 失败。这两条 dylib 对 Windows NSIS 包无任何作用。
+
+**默认已自动处理**：`pack:win` 会先调用 [`scripts/electron-builder-cache-warm.mjs`](../../scripts/electron-builder-cache-warm.mjs)，在 `electron-builder` 启动前把缓存预先填好（用同一份 `node_modules/7zip-bin` 的 `7za.exe`，并 `-x!` 排除两条 dylib symlink）。首次执行需联网下载约 5.6 MB 到 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\`；之后命中本机缓存即直接跳过。脚本对非 Windows 平台 no-op，不影响 `pack:mac`。
+
+**若仍失败的备选手步**（任选其一）：
+
+1. **启用 Windows 开发者模式（推荐，一次性）**：`设置 → 系统 → 开发者选项 → 开发者模式 = 开`；新开终端后再跑 `npm run pack:win`。开发者模式会给当前用户授予 `SeCreateSymbolicLinkPrivilege`，且对其它原生工具普遍受益。
+2. **以管理员身份运行 PowerShell**：右键「以管理员身份运行」，再 `cd G:\Code\zhizhu\apps\client; npm run pack:win`。每个新终端都要重新提权。
+3. **手动清空 winCodeSign 缓存重来**：
+   ```powershell
+   Remove-Item -Recurse -Force "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign"
+   ```
+   再跑 `npm run pack:win` 触发预热脚本重新填充。
+
 ## 后续迭代（本包尚未实现）
 
 - 任务队列完整消费、`runner-smoke-test` 之外的生产采集入口、离线 Excel、加密存储等与立项 **§3.1、§4** 对齐。  
@@ -113,3 +149,7 @@ npm run pack:win
 ## 终端里两行「像报错」的日志（macOS）
 
 启动 `electron .` 后若出现 **`TSM AdjustCapsLockLED…`**、**`error messaging the mach port for IMKCFRunLoopWakeUpReliable`**，来自系统输入法框架，**一般可忽略**，不是本应用崩溃信息。若壳页无响应，请看是否有 **`dist/renderer.js` 加载失败** 或 **`[zhizhu-client]`** 前缀的 Node 日志。
+
+## Windows：终端中文乱码
+
+主进程日志为 UTF-8。若 **CMD / 旧版 PowerShell** 仍用系统代码页（如 GBK），`[zhizhu-client]`、`[playwright-install]` 等行可能乱码。应用在启动时会尝试执行 **`chcp 65001`**；若仍异常，可在启动客户端**前**在同一终端执行 **`chcp 65001`**，或改用 **Windows Terminal** 并启用 UTF-8。**客户端内「客户端日志」面板**不受终端代码页影响，以界面内文字为准。

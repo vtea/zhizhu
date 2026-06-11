@@ -1,0 +1,27 @@
+{
+  "name": "@zhizhu/biz-account-auth-status",
+  "private": true,
+  "version": "0.1.0",
+  "description": "抖音员工授权 confer 列表 auth_status 归一化（客户端组行、API 入库、Web 展示共用）",
+  "main": "dist/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json",
+    "test": "tsx --test src/**/*.unit.test.ts",
+    "postinstall": "node -e \"const cp=require('node:child_process');const hasTsc=(()=>{try{return !!require.resolve('typescript/bin/tsc')}catch{return false}})();if(!hasTsc){console.log('[biz-account-auth-status] skip build: typescript not installed');process.exit(0);}cp.execSync('npm run build',{stdio:'inherit'});\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "~5.8.0"
+  }
+}

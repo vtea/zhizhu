@@ -21,6 +21,7 @@
 | POST | `/api/v1/tenants/:tenantId/videos` | **tenant_admin**：离线占位新增（body：`account_id`、`dy_video_id`；可选 `dy_title`、`dy_cover_url`、`dy_video_url`、`dy_publish_at`）；`metric_synced_at` 为空直至客户端同步 |
 | GET | `/api/v1/tenants/:tenantId/videos/recommended` | 推荐排序（服务端算 `recommend_score`） |
 | GET | `/api/v1/tenants/:tenantId/leads?lead_stage=&page=&page_size=&account_id=&from=&to=` | `biz_lead` 分页 |
+| POST | `/api/v1/tenants/:tenantId/accounts/:platform/:accountId/repoint-detached-placeholder` | **tenant_admin**：将 `__detached__:*` 占位上的线索/视频等迁到 body `to_account_id`，并删除占位；须 `password`（登录密码） |
 | GET | `/api/v1/tenants/:tenantId/devices` | `biz_device` + 嵌套 `biz_device_browser_account`（未吊销） |
 | POST | `/api/v1/tenants/:tenantId/devices/:deviceId/heartbeat` | 更新 **`last_seen_at`**：**`Authorization: Bearer <device_access_token>`**（与本机设备一致）**或**控制台会话 JWT |
 | POST | `/api/v1/device-bind/consume` | **Electron 无 JWT**：凭一次性绑定码登记 `biz_device`；须配置 **`DEVICE_TOKEN_SECRET`** 以返回 **`device_access_token`**。体 `{ "code", "device_label?" }`（详见 `docs/数据字典-任务与设备.md` §3.0.1） |
@@ -49,6 +50,8 @@ npm run migrate -w @zhizhu/api
 
 将执行 [`migrations/`](migrations/) 下全部 `.sql`（按文件名排序）。
 
+**合并线索版主体（同级租户下改写 `dy_leads_enterprise_id`）**：见 [`scripts/merge-leads-enterprise.ts`](scripts/merge-leads-enterprise.ts)。在 `apps/api` 目录先 `npx tsx scripts/merge-leads-enterprise.ts --dry-run` 盘点，确认后 `--execute`（默认 `jcqy-dy` → `7273749651499548709`，可用环境变量 `MERGE_LEADS_ENT_SRC` / `MERGE_LEADS_ENT_DST` 覆盖）。**仅用于你已理解的库**；执行前请备份。
+
 **演示数据**：`020_seed_demo_biz.sql` 为租户 **`demo`** 写入 `biz_account` / `biz_video` / `biz_lead` / `biz_ad_placement` / 设备与任务等（与 Web 登录页默认租户一致）。每次 migrate 全量重放该文件时会先按租户清理再插入，可重复跑。
 
 **控制台用户表**：迁移 **`027_console_user_login_username.sql`** 为 `biz_console_user` 增加 **`login_username`**（与 `tenant_id` 组合唯一），登录时 **`login_identifier`** 可与邮箱二选一匹配（`POST /api/v1/auth/login` 仍兼容旧字段 **`email` / `username`**）。
@@ -72,7 +75,8 @@ curl -s http://127.0.0.1:3000/health
 
 ```bash
 npm run build -w @zhizhu/api
+npm run migrate:prod -w @zhizhu/api
 node apps/api/dist/index.js
 ```
 
-仅监听 **127.0.0.1**；若需公网暴露，应在反向代理后另行配置，勿把数据库凭据暴露给浏览器。
+默认监听 **`API_LISTEN_HOST`（未设置时为 127.0.0.1）**；裸机建议在反代后仅本机连 API。Docker 或容器内需对网桥暴露端口时，设置 **`API_LISTEN_HOST=0.0.0.0`**（见根目录 `.env.example`）。勿把数据库凭据暴露给浏览器。

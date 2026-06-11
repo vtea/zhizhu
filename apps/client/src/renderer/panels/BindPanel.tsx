@@ -119,13 +119,27 @@ export function BindPanel({ state, refresh }: BindPanelProps) {
       <SectionCard title="本机 Runner 身份">
         <div className="flex flex-col gap-2">
           <p className="zz-meta-line">
-            <Pill tone={state?.deviceId ? "success" : "neutral"}>
-              {state?.deviceId ? "已绑定" : "未绑定"}
+            <Pill
+              tone={
+                state?.deviceId && state?.hasDeviceAccessToken === true
+                  ? "success"
+                  : state?.deviceId
+                    ? "warn"
+                    : "neutral"
+              }
+            >
+              {state?.deviceId && state?.hasDeviceAccessToken === true
+                ? "已绑定"
+                : state?.deviceId
+                  ? "缺凭证"
+                  : "未绑定"}
             </Pill>
             <span className="ml-2">
-              {state?.deviceId
+              {state?.deviceId && state?.hasDeviceAccessToken === true
                 ? `设备 ID 已登记：${state.deviceId}。`
-                : "尚无设备 ID：完成上面绑定后此处会显示 Runner 身份摘要。"}
+                : state?.deviceId
+                  ? `设备 ID 已登记但未检测到凭证；请重新完成绑定或检查 client-state.json。`
+                  : "尚无设备 ID：完成上面绑定后此处会显示 Runner 身份摘要。"}
             </span>
           </p>
           <p className="zz-meta-line">

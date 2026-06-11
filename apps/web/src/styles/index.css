@@ -92,6 +92,23 @@
     @apply border-zz-danger focus:border-zz-danger focus:ring-zz-danger/15;
   }
 
+  /* 原生 select / 自定义下拉触发器：隐藏系统箭头，统一右侧 chevron 与留白。 */
+  .zz-input-select,
+  select.zz-input {
+    appearance: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-right: 2.5rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%2393939f' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 0.875rem;
+  }
+  button.zz-input-select {
+    text-align: left;
+  }
+
   /* 字段三件套（label + 控件 + 提示/错误） */
   .zz-field {
     @apply flex flex-col gap-1.5;
@@ -241,6 +258,24 @@
       content: attr(data-label);
       @apply shrink-0 text-xs font-medium uppercase tracking-wide text-zz-muted;
     }
+    .zz-table-responsive td[data-label="封面"]::before,
+    .zz-table-responsive td[data-label="选择"]::before {
+      content: none;
+    }
+    .zz-table-responsive td[data-label="封面"],
+    .zz-table-responsive td[data-label="选择"] {
+      @apply inline-flex w-auto items-center py-1;
+    }
+    .zz-table-responsive td[data-label="操作"] {
+      @apply mt-2 flex-wrap justify-end border-t border-zz-border-light pt-2;
+    }
+    .zz-table-responsive td[data-label="操作"]::before {
+      content: none;
+    }
+  }
+
+  .zz-grid-item {
+    min-width: 0;
   }
 
   /* === 等宽 / 诊断块 ======================================================= */

@@ -28,9 +28,10 @@
    - 非 readonly：5s 短超时 fill，失败再降级到面板路径。
    - 不再依赖 `ZHIZHU_PER_STEP_TIMEOUT_MS=8000`；该步典型耗时 **3–6s**（旧版 ~80s）。
 4. `setDateRange` 之后 `wait ms=1500` 让首批 10/页 请求落地，再 `clearCaptureAccumulate` 把脏包一次清空。
-5. **未留资 Tab**：开页大小下拉 → 选 50 条/页 → 等 wlz capture（accumulate +1 的新响应）。
-6. **已留资 Tab**：切 Tab → 等首包 → **再次**开页大小下拉 → **再次**选 50/页 → 等 ylz capture（`accumulate_grow_by:1`）。
+5. **未留资 Tab**：开下拉 → `350ms` → 等 **`50条/页` 选项可见** → 普通 click 选 50（**勿** `force`，否则可能不触发 list 请求）→ `800ms` → 等 `high_dive_wlz_payload` 首包（45s）。
+6. **已留资 Tab**：切 Tab → 等首包（确认 Tab 落地）→ `clear_ylz_before_page_size_50` 丢弃 10/页脏包 → 开下拉 → 选 50 → `800ms` → 等 `high_dive_ylz_payload` **首包**（45s，**勿** `accumulate_grow_by`：首屏常已有 2 包，grow_by 会误等第 3 包）。
    - 站点的「每页 N 条」是 **按 Tab 维护**，切 Tab 后必须再切一次 50/页，否则 ylz 仍然只能拿 10 条。
+7. **Feelgood 满意度浮层**（`.athena-survey-widget`）可能挡住下拉选项；Runner 在每次 `click` 前 best-effort 关闭/移除，选 50 用普通 click（勿 `force`，避免不触发 list）。
 
 ## 真实选择器（来自 jiachengdy headed dump）
 
@@ -62,7 +63,7 @@ npx tsx scripts/run-high-dive-daily-range.ts --start 2026-04-28 --end 2026-04-28
 
 单日（如 2026-04-28）期望：
 
-- 17 步全绿，`event=done` `ok:true`
+- 25 步全绿，`event=done` `ok:true`（含 `clear_ylz_before_page_size_50`、页大小 settle、等 list capture 45s）
 - `summary.step_durations`：`setDateRange ≈ 3–6s`（readonly 探测 → 直接面板点选；旧版 ~80s 的 fill 等待已剔除），其余每步 ≤ 1.5s
 - 总耗时 **≈ 8–12s**
 - `captures.high_dive_wlz_payload[*].data.total`、`high_dive_ylz_payload[*].data.total` 与页面 Tab 括号数字一致（接口下发的当下值）

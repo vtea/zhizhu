@@ -9,6 +9,12 @@
 
 - 仓库根 **`npm run bootstrap:env`**：只补缺失变量并生成 `JWT_SECRET` / `DEVICE_TOKEN_SECRET`、**`CONSOLE_ALLOW_PUBLIC_REGISTER`**（及 Web **`VITE_CONSOLE_PUBLIC_REGISTER`**）等，不覆盖已有 `.env`；用法见根目录 **README.md**「`bootstrap:env`」小节与 [`.env.example`](.env.example)。**老环境**：未设 **`CONSOLE_ALLOW_PUBLIC_REGISTER=true`** 时自助注册 API **403**，可手写补键或再跑 bootstrap；租户授权列须 **`npm run migrate:api`** 应用至 **`047`** 及后续（含 **`048_biz_video_dy_video_url`**），否则租户列表/登记或视频列表可能降级或报缺列。
 
+## 客户端单元测试（`@zhizhu/client`）
+
+- **细则（命令、globs、`*.unit.test.ts`）**： **[`apps/client/README.md`](apps/client/README.md)「单元测试」**。
+- **提要**：仓库根 **`npm test -w @zhizhu/client`**；**Node ≥22**。
+- **换行**：见仓库根 **[`.gitattributes`](.gitattributes)**（多处文本路径约定 **检出 LF**，减少 Windows CRLF 噪声）。若在团队约定窗口**批量**调整 `text`/`eol` 规则后出现整文件 diff，可由维护者 **`git add --renormalize .`** 收口；日常编辑保持与现行规则一致即可。
+
 ## Web 控制台 E2E（`e2e-playwright-zhizhu-web`）
 
 - **真机验证**：改 **`apps/web`** 或修控制台相关 **bug** 后，在可行条件下须用 **Playwright 真机 Chromium** 跑仓库根 `npm run test:e2e` 验收（与仅 `build:web` 互补，不互相替代）。前置与排障见 **`e2e-playwright-zhizhu-web/README.md`**。

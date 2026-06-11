@@ -1,5 +1,7 @@
 /** 与数据字典字段对齐的演示数据（tenant 维度用 slug 便于阅读） */
 
+import { formatBizAccountAuthStatusLabelZh } from "@zhizhu/biz-account-auth-status";
+
 export const MOCK_TENANT = "demo";
 
 export type LeadStage = "no_conversion" | "converted";
@@ -46,6 +48,8 @@ export type MockVideo = {
   metric_synced_at: string | null;
   /** PG：员工账号展示名 */
   account_display_name?: string | null;
+  /** 关联投放行状态（优先 is_current，否则最新 ad_date） */
+  placement_status?: string | null;
 };
 
 export type MockAccount = {
@@ -59,6 +63,8 @@ export type MockAccount = {
   dy_nickname: string | null;
   dy_unique_id: string | null;
   dy_user_url?: string | null;
+  /** 抖音侧授权状态（个号轨同步）；与运营状态 ops_status 独立 */
+  auth_status?: string | null;
   ops_status: "running" | "paused" | "revoked";
   remark?: string | null;
 };
@@ -79,6 +85,11 @@ export function normalizeBizAccountOpsStatusUi(raw: unknown): "running" | "pause
 /** 与 API `active_ops_only`：可参与离线新建视频、投放、同步任务等 */
 export function accountEligibleForOpsBinding(a: { ops_status?: unknown }): boolean {
   return normalizeBizAccountOpsStatusUi(a.ops_status) === "running";
+}
+
+/** 列表只读：biz_account.auth_status → 中文标签（逻辑见 `@zhizhu/biz-account-auth-status`） */
+export function formatBizAccountAuthStatusUi(raw: unknown): string {
+  return formatBizAccountAuthStatusLabelZh(raw);
 }
 
 /** 线索版浏览器里登录态健康（由客户端探测上报，见 `数据字典-任务与设备.md` §3.2） */
@@ -213,6 +224,7 @@ export const mockVideos: MockVideo[] = [
     dy_completion_rate: 0.18,
     dy_lead_count: 12,
     metric_synced_at: "2026-04-23T06:00:00.000Z",
+    placement_status: "投放中",
   },
   {
     id: "v2",
@@ -234,6 +246,7 @@ export const mockVideos: MockVideo[] = [
     dy_completion_rate: 0.22,
     dy_lead_count: 5,
     metric_synced_at: "2026-04-23T06:00:00.000Z",
+    placement_status: "需要复盘",
   },
   {
     id: "v3",
@@ -270,6 +283,7 @@ export const mockAccounts: MockAccount[] = [
     dy_nickname: "企业号·华东",
     dy_unique_id: "east_official",
     dy_user_url: "https://www.douyin.com/user/mock-east-official",
+    auth_status: "active",
     ops_status: "running",
   },
   {
@@ -283,6 +297,7 @@ export const mockAccounts: MockAccount[] = [
     dy_nickname: "个人授权·小王",
     dy_unique_id: "wang_auth",
     dy_user_url: "https://www.douyin.com/user/mock-wang-auth",
+    auth_status: "active",
     ops_status: "running",
   },
   {
@@ -296,6 +311,7 @@ export const mockAccounts: MockAccount[] = [
     dy_nickname: "演示·已暂停",
     dy_unique_id: "paused_demo",
     dy_user_url: null,
+    auth_status: "active",
     ops_status: "paused",
   },
   {
@@ -309,6 +325,7 @@ export const mockAccounts: MockAccount[] = [
     dy_nickname: "演示·已撤销",
     dy_unique_id: "revoked_demo",
     dy_user_url: null,
+    auth_status: "revoked",
     ops_status: "revoked",
   },
 ];

@@ -1,0 +1,62 @@
+name: Client unit tests
+
+# pull_request：
+# - 不设 paths（避免改 workspace 共用包漏检）；paths-ignore 仅排除「全部为 docs/** 的改动」——此时 GitHub 不触发（非失败）。
+# - 若 PR 混入任意非 docs/**（如根 README、任一 app/package），仍会运行。
+# push：
+# - 所列默认分支且命中下列 paths（覆盖根 workspaces 与各包；另含 scripts）。未改到此列表时不会因工作流本身漏跑（PR 仍可触发）。
+# CI：单一 Node **22**（与本仓库 package `engines.node` 一致；版本策略变更时请同步 README / AGENTS）。
+# PR 全时跑仍会消耗分钟数；budget 紧张可再收窄 paths-ignore 或收窄 push.paths。
+# concurrency：顶层 cancel-in-progress 主要取消同一 ref 上上一轮未结束的 run。
+# 手动：workflow_dispatch — Actions → 本 workflow → Run workflow。
+# pin：checkout/setup-node SHA 对齐 v4 tip；可由 Dependabot 追踪更新。
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - trunk
+    paths:
+      - ".github/workflows/client-unit-test.yml"
+      - "apps/api/**"
+      - "apps/client/**"
+      - "apps/runner/**"
+      - "apps/web/**"
+      - "e2e-playwright-zhizhu-web/**"
+      - "package-lock.json"
+      - "package.json"
+      - "packages/playwright-browser-fingerprint/**"
+      - "packages/biz-account-auth-status/**"
+      - "packages/playwright-rule-schema/**"
+      - "packages/playwright-shell-contract/**"
+      - "scripts/**"
+      - "tools/playwright-field-probe/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-unit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # v4 tip @ 34e1148
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      # v4 tip @ 49933ea
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run @zhizhu/client unit tests
+        run: npm test -w @zhizhu/client
