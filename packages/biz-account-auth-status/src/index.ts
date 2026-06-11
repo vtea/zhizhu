@@ -41,7 +41,11 @@ export function coerceRowAuthStatusToIngestString(raw: unknown): string {
 }
 
 /**
- * API `ingestEmployeePersonalAuthRows`：将任意字符串（含 legacy 数字字符串）规范为 PG 枚举用语。
+ * API `ingestEmployeePersonalAuthRows`：将任意字符串（含 legacy 数字字符串）规范为约定用语。
+ *
+ * 未知值**有意原样透传**：`biz_account.auth_status` 为 text 列（003_biz_account.sql），
+ * 无枚举约束；Web `formatBizAccountAuthStatusLabelZh` 对未知值显示「未知」。
+ * 保留原始值便于对照抓包发现平台新增枚举，再补进 LEGACY_* 集合与文档。
  */
 export function canonicalAuthStatusForBizAccountIngest(raw: string): string {
   const t = raw.trim().toLowerCase();

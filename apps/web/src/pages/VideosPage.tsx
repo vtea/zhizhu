@@ -235,10 +235,16 @@ export function VideosPage() {
     setSelectedIds(new Set());
   }, [accountId, dyVideoId, sort, from, to, selectedDyLeadsEnterpriseId, tenantId, pageSize]);
 
+  /** 切换主体/租户时关闭所有弹窗并清理表单残留，避免在新主体上下文里编辑旧主体视频 */
   useEffect(() => {
     setPlacementVideo(null);
     setPlacementSpend("");
     setPlacementErr(null);
+    setEditVideo(null);
+    setVideoMutErr(null);
+    setAddModalOpen(false);
+    setOffErr(null);
+    setColumnPrefsOpen(false);
   }, [selectedDyLeadsEnterpriseId, tenantId]);
 
   useEffect(() => {

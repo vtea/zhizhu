@@ -16,6 +16,7 @@ test("clickErrorSuggestsPointerIntercept: 识别 pointer 被挡", () => {
 });
 
 test("dismissLeadsOverlays: 移除 widget 后可点击下层按钮", async () => {
+  // allow-raw-launch: 单元测试仅 setContent 本地 HTML fixture，不访问业务域，无需指纹
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();

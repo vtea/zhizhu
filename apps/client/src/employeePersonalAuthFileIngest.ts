@@ -1557,8 +1557,11 @@ export function buildBizVideoRowsFromCaptures(
  * RunnerLoop 多账号：`summary.captures` 按 `account_id` 分桶（每值为一轮 task-rule 的 captures）。
  * `buildBizVideoRowsFromCaptures` 只认顶层 `dy_*` 键，故无行时需再按桶展开。
  */
-/** 单轮 task-rule 扁平 captures 的顶层 key；与 RunnerLoop `aggregateCaptures[accountId]` 分桶结构互斥。 */
-const BIZ_VIDEO_FLAT_CAPTURE_TOP_KEYS = new Set([
+/**
+ * 单轮 task-rule 扁平 captures 的顶层 key；与 RunnerLoop `aggregateCaptures[accountId]` 分桶结构互斥。
+ * 导出供跨包一致性断言：须与 runner `captureProjection.BIZ_VIDEO_PROJECTABLE_KEYS` 同步。
+ */
+export const BIZ_VIDEO_FLAT_CAPTURE_TOP_KEYS = new Set([
   "dy_latest_video_payload",
   "dy_seo_inner_link_payload",
   "dy_video_list_payload",

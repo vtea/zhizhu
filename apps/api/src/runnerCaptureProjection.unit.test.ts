@@ -8,11 +8,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildBizVideoRowsFromCaptures } from "../../client/src/employeePersonalAuthFileIngest.js";
+import {
+  BIZ_VIDEO_FLAT_CAPTURE_TOP_KEYS,
+  buildBizVideoRowsFromCaptures,
+} from "../../client/src/employeePersonalAuthFileIngest.js";
 import {
   __projectionInternals,
   projectCapturesForBizVideoRunnerOutput,
 } from "../../runner/src/ruleRunner/captureProjection.js";
+
+test("runner BIZ_VIDEO_PROJECTABLE_KEYS 与 client BIZ_VIDEO_FLAT_CAPTURE_TOP_KEYS 同步（双份常量防漂移）", () => {
+  assert.deepEqual(
+    [...__projectionInternals.BIZ_VIDEO_PROJECTABLE_KEYS].sort(),
+    [...BIZ_VIDEO_FLAT_CAPTURE_TOP_KEYS].sort(),
+    "扩展业务视频抓包键时须同时更新 runner captureProjection 与 client employeePersonalAuthFileIngest 两处集合",
+  );
+});
 
 /** 模拟一条抖音个人主页 `aweme/post` 接口的列表项；字段贴近线上响应结构，刻意制造大量噪声字段。 */
 function makeFatAwemeListItem(awemeId: string, authorUid: string): Record<string, unknown> {

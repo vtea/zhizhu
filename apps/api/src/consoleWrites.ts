@@ -1185,15 +1185,20 @@ export async function repointDetachedPlaceholderBizAccount(
     return { ok: false, error: "该占位账号下没有可迁移的数据；可直接删除占位行" };
   }
 
+  /**
+   * biz_lead / biz_video 用 COALESCE 把 NULL/空主体也计为不一致：
+   * 普通 `NULL <> x` 结果为 NULL 不计数，会让空主体历史数据被静默迁到目标账号。
+   * biz_task / biz_ad_placement 的空主体行保持放行（任务/投放可不挂主体）。
+   */
   const mis = await poolQuery(
     `SELECT
        (SELECT count(*)::int FROM biz_lead
          WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
-           AND lower(trim(dy_leads_enterprise_id::text)) <> lower(trim($4::text))
+           AND lower(trim(COALESCE(dy_leads_enterprise_id::text, ''))) <> lower(trim($4::text))
        ) +
        (SELECT count(*)::int FROM biz_video
          WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
-           AND lower(trim(dy_leads_enterprise_id::text)) <> lower(trim($4::text))
+           AND lower(trim(COALESCE(dy_leads_enterprise_id::text, ''))) <> lower(trim($4::text))
        ) +
        (SELECT count(*)::int FROM biz_task
          WHERE tenant_id = $1 AND platform = $2 AND account_id = $3
@@ -1211,7 +1216,8 @@ export async function repointDetachedPlaceholderBizAccount(
   if (bad > 0) {
     return {
       ok: false,
-      error: "占位账号下的数据与目标账号所属主体不一致，无法自动归并；请先统一企业主体或逐条处理",
+      error:
+        "占位账号下的数据与目标账号所属主体不一致（含主体为空的线索/视频），无法自动归并；请先统一企业主体或逐条处理",
     };
   }
 

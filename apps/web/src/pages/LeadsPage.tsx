@@ -113,6 +113,12 @@ export function LeadsPage() {
   const [editLead, setEditLead] = useState<LeadEditDraft | null>(null);
   const [mutErr, setMutErr] = useState<string | null>(null);
 
+  /** 切换主体/租户时关闭编辑弹窗，避免在新主体上下文里改旧主体线索 */
+  useEffect(() => {
+    setEditLead(null);
+    setMutErr(null);
+  }, [selectedDyLeadsEnterpriseId, tenantId]);
+
   useEffect(() => {
     const noRangeInUrl = !search.get("from") && !search.get("to");
     if (noRangeInUrl) {

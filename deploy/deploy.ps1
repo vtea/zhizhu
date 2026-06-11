@@ -8,15 +8,17 @@
     1. 检查 docker / docker compose 可用性
     2. 若仓库根缺 .env，自动生成；已有则只补缺失键（不覆盖已配置值）
     3. 强随机生成 JWT_SECRET / DEVICE_TOKEN_SECRET（仅在缺失时）
-    4. 按 -Domain / 默认 http://localhost:8080 设置 PUBLIC_ORIGIN / CORS_ORIGIN / CONSOLE_WEB_PUBLIC_URL
+    4. 按 -Domain 设置 PUBLIC_ORIGIN / CORS_ORIGIN / CONSOLE_WEB_PUBLIC_URL；
+       未传 -Domain 时沿用 .env 已有 PUBLIC_ORIGIN（都没有才用 http://localhost:8080）
     5. docker compose build && docker compose up -d
     6. 等待 /health 通过，打印访问地址与初始账号
 
 .PARAMETER Domain
   浏览器访问控制台的根地址，例如 https://console.example.com。
+  不传时沿用 .env 已有 PUBLIC_ORIGIN，再缺省为 http://localhost:8080。
 
 .PARAMETER Port
-  Web 容器映射到宿主机的端口（默认 8080）。
+  Web 容器映射到宿主机的端口。不传时沿用 .env 已有 WEB_HOST_PORT，再缺省 8080。
 
 .PARAMETER Rebuild
   强制重新 build 镜像（修改 PUBLIC_ORIGIN 后通常需要）。
@@ -34,8 +36,9 @@
 
 [CmdletBinding()]
 param(
-  [string]$Domain = "http://localhost:8080",
-  [string]$Port = "8080",
+  # 不传时沿用 .env 已有 PUBLIC_ORIGIN / WEB_HOST_PORT，再缺省 http://localhost:8080 / 8080
+  [string]$Domain = "",
+  [string]$Port = "",
   [switch]$Rebuild,
   [switch]$OpenRegister,
   [switch]$SkipBuild
@@ -66,15 +69,14 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
   Write-Err "未检测到 docker。请先安装 Docker Desktop / Engine 24+。"
   exit 1
 }
-try {
-  & docker compose version *> $null
-} catch {
+# 外部命令失败不会触发 catch，须检查 $LASTEXITCODE
+& docker compose version *> $null
+if ($LASTEXITCODE -ne 0) {
   Write-Err "未检测到 docker compose（V2）。"
   exit 1
 }
-try {
-  & docker info *> $null
-} catch {
+& docker info *> $null
+if ($LASTEXITCODE -ne 0) {
   Write-Err "docker daemon 不可访问。请确认 Docker Desktop 已启动。"
   exit 1
 }
@@ -132,6 +134,17 @@ if (-not (Test-Path $EnvFile)) {
   Set-Content -Path $EnvFile -Value $header
 }
 
+# 未显式传 -Domain / -Port 时沿用 .env 已有配置（避免日常更新重置线上域名）
+if ([string]::IsNullOrEmpty($Domain)) {
+  $Domain = Get-EnvValue -Key "PUBLIC_ORIGIN"
+  if (-not [string]::IsNullOrEmpty($Domain)) {
+    Write-Log "未传 -Domain，沿用 .env 中 PUBLIC_ORIGIN=$Domain"
+  }
+}
+if ([string]::IsNullOrEmpty($Domain)) { $Domain = "http://localhost:8080" }
+if ([string]::IsNullOrEmpty($Port)) { $Port = Get-EnvValue -Key "WEB_HOST_PORT" }
+if ([string]::IsNullOrEmpty($Port)) { $Port = "8080" }
+
 $pgHost = Get-EnvValue -Key "PGHOST"
 $dbUrl = Get-EnvValue -Key "DATABASE_URL"
 if ([string]::IsNullOrEmpty($pgHost) -and [string]::IsNullOrEmpty($dbUrl)) {
@@ -155,13 +168,15 @@ Set-EnvForce -Key "CORS_STRICT" -Value "1"
 Set-EnvForce -Key "CORS_ORIGIN" -Value $Domain
 Set-EnvForce -Key "CONSOLE_WEB_PUBLIC_URL" -Value $Domain
 
+# 自助注册：-OpenRegister 时开放；未传参时沿用 .env 已有值（首次默认关闭）
 if ($OpenRegister.IsPresent) {
-  Set-EnvForce -Key "CONSOLE_ALLOW_PUBLIC_REGISTER" -Value "true"
-  Set-EnvForce -Key "VITE_CONSOLE_PUBLIC_REGISTER" -Value "true"
+  $RegisterValue = "true"
 } else {
-  Set-EnvForce -Key "CONSOLE_ALLOW_PUBLIC_REGISTER" -Value "false"
-  Set-EnvForce -Key "VITE_CONSOLE_PUBLIC_REGISTER" -Value "false"
+  $RegisterValue = Get-EnvValue -Key "CONSOLE_ALLOW_PUBLIC_REGISTER"
+  if ($RegisterValue -ne "true") { $RegisterValue = "false" }
 }
+Set-EnvForce -Key "CONSOLE_ALLOW_PUBLIC_REGISTER" -Value $RegisterValue
+Set-EnvForce -Key "VITE_CONSOLE_PUBLIC_REGISTER" -Value $RegisterValue
 
 Write-Log "已写入 .env（敏感值不在终端回显）"
 
@@ -178,10 +193,12 @@ if (-not $SkipBuild.IsPresent) {
   }
 }
 
-$useBundledDb = $false
-if ([string]::IsNullOrEmpty($pgHost) -and [string]::IsNullOrEmpty($dbUrl)) {
-  $useBundledDb = $true
-}
+# 是否使用 compose 内置 Postgres：重新读取 .env（上面可能刚写入默认连接串），
+# 看连接串是否指向内置服务主机名 postgres；不能用「写入前的 $dbUrl 是否为空」判定，
+# 否则首次写入后或二次运行时会漏加 --profile bundled-db，内置库不会启动。
+$pgHostNow = Get-EnvValue -Key "PGHOST"
+$dbUrlNow = Get-EnvValue -Key "DATABASE_URL"
+$useBundledDb = ($pgHostNow -eq "postgres") -or ($dbUrlNow -match "@postgres[:/]")
 $composeArgs = @("compose", "up", "-d")
 if ($useBundledDb) {
   $composeArgs = @("compose", "--profile", "bundled-db", "up", "-d")
@@ -218,7 +235,7 @@ if ($ok) {
   Write-Warn "可通过 docker compose logs -f api 查看日志，或 docker compose ps 查看状态。"
 }
 
-$registerNote = if ($OpenRegister.IsPresent) { "已开放" } else { "已关闭（仅平台/租户管理员可创建）" }
+$registerNote = if ($RegisterValue -eq "true") { "已开放" } else { "已关闭（仅平台/租户管理员可创建）" }
 
 @"
 

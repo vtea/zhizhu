@@ -12,7 +12,9 @@
 
 ## 采集策略（2026-04-29 重写）
 
-整体放弃旧版的 `paginate next_button` 翻页方案，改为「**先把每页放大到 50 条**」一次性吃掉两 Tab 的全部数据；线索单日基本 ≤30 条，命中 50/页后两 Tab 各拿一包响应即够。
+主路径放弃旧版的 `paginate next_button` 翻页方案，改为「**先把每页放大到 50 条**」一次性吃掉两 Tab 的全部数据；线索单日基本 ≤30 条，命中 50/页后两 Tab 各拿一包响应即够。
+
+规则末尾仍保留两个 `paginate` 步（`paginate_wlz_more_pages` / `paginate_ylz_more_pages`）作为 **单日 >50 条时的兜底**：解释器对「找不到下一页按钮 / 按钮 disabled」按正常结束处理（不报错），所以 ≤50 条时这两步会立即跳过，不增加耗时。
 
 1. 接口捕获 `GET /bff/user-manage/high-dive-user/list`，按 post body 中的 `hasClue` 分流：
    - `high_dive_wlz_payload`（`hasClue:2`，**未留资**）
@@ -69,7 +71,7 @@ npx tsx scripts/run-high-dive-daily-range.ts --start 2026-04-28 --end 2026-04-28
 - `captures.high_dive_wlz_payload[*].data.total`、`high_dive_ylz_payload[*].data.total` 与页面 Tab 括号数字一致（接口下发的当下值）
 - 入库 HTTP 200，`written + skipped == wlz_total + ylz_total`（首跑 `written>0`，复跑全 `skipped`，幂等键命中）
 
-如果 ylz 仍只解析到 10 条，多半是「50/页对 ylz 这次切换没生效」——回到 `wait_ylz_50_per_page` 步骤的 capture 数组，确认是不是只命中了首包；必要时把 `accumulate_grow_by:1` 改成更激进的 `ms` 等待。
+如果 ylz 仍只解析到 10 条，多半是「50/页对 ylz 这次切换没生效」——回到 `wait_ylz_50_per_page` 步骤的 capture 数组，确认是不是只命中了首包（该步**不要**加 `accumulate_grow_by`，见上文第 6 条；必要时增大该步 `timeout_ms` 或在选 50 后追加固定 `ms` 等待）。
 
 ## mapping 目标
 

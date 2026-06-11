@@ -66,9 +66,8 @@ describe("ingestOneAccountFromTaskRuleResult", () => {
       { dy_video_id: "v2", account_id: "acc-1", title: "b" },
     ];
     /**
-     * `mergeAndDedupeRows` 仅在 derived.length===0 时 **直接** 返回 runner 行的 `withAccountIdFallback` 映射，
-     * 不做去重。所以这条用例的实际期望是 rows_posted === 3（不去重）。
-     * 这个语义来自原 runnerLoop 的"runner 直出行优先"分支，与 B 套保持一致。
+     * `mergeAndDedupeRows` 即使 derived 为空也按 `dy_video_id` 对 runner 直出行去重：
+     * v1 重复行被丢弃，期望 rows_posted === 2。
      */
     /** 走 POST 失败路径：fetch 注入失败，确认 error_code 与 rows_posted 一致。 */
     const originalFetch = global.fetch;
@@ -99,9 +98,11 @@ describe("ingestOneAccountFromTaskRuleResult", () => {
       });
       assert.equal(r.ok, false);
       assert.equal(r.error_code, "INGEST_HTTP_FAILED");
-      assert.equal(r.rows_posted, 3);
+      assert.equal(r.rows_posted, 2);
       assert.equal(r.result_dto.ingest_ok, false);
-      assert.equal(r.result_dto.rows_posted, 3);
+      assert.equal(r.result_dto.rows_posted, 2);
+      const postedIds = r.ingest_rows_snapshot.map((row) => (row as { dy_video_id?: string }).dy_video_id);
+      assert.deepEqual(postedIds, ["v1", "v2"]);
     } finally {
       global.fetch = originalFetch;
     }

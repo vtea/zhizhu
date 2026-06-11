@@ -632,10 +632,20 @@ async function executeStep(
             } catch {
               /* 视口外或虚拟列表包裹时不阻断 */
             }
-            await btn.click({
-              timeout: paginatePerPageTimeoutMs,
-              force: true,
-            });
+            /**
+             * 与 `click` 步对齐：先关 Feelgood 浮层 + 普通 click（force 可能点穿浮层
+             * 而不触发真实 list 请求）；仅在确认被浮层拦截时才 force 重试。
+             */
+            await dismissLeadsOverlays(page);
+            try {
+              await btn.click({ timeout: paginatePerPageTimeoutMs });
+            } catch (clickErr) {
+              if (!clickErrorSuggestsPointerIntercept(clickErr)) {
+                throw clickErr;
+              }
+              await dismissLeadsOverlays(page);
+              await btn.click({ timeout: paginatePerPageTimeoutMs, force: true });
+            }
           } catch {
             /** 选择器找不到 / 已禁用：视为已无更多页，正常结束循环 */
             return;

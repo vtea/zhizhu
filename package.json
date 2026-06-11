@@ -30,6 +30,7 @@
     "bootstrap:env": "node scripts/bootstrap-local-env.mjs",
     "deploy:prod": "bash deploy/deploy.sh",
     "deploy:prod:win": "powershell -ExecutionPolicy Bypass -File deploy/deploy.ps1",
+    "deploy:update": "bash deploy/update.sh",
     "run:high-dive-range": "npx tsx scripts/run-high-dive-daily-range.ts",
     "dev:client": "npm run start -w @zhizhu/client",
     "test:e2e": "npm run test:e2e -w zhizhu-e2e-playwright",

@@ -21,6 +21,8 @@ RUN npm ci -w @zhizhu/web --include-workspace-root \
   && npm run build -w @zhizhu/web
 
 FROM nginx:1.27-alpine
+# 显式安装 curl 供 compose healthcheck 使用（不依赖 busybox wget applet 是否存在）
+RUN apk add --no-cache curl
 COPY deploy/nginx.web.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 80

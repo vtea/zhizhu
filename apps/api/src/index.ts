@@ -1413,6 +1413,20 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 400, { error: out.error });
           return;
         }
+        /** 高危批量写操作：记录谁把哪个占位账号的数据迁到了哪个账号 */
+        await consoleAuth.insertAuditEvent(
+          tenantId,
+          subJwt || null,
+          "biz_account.repoint_detached_placeholder",
+          "biz_account",
+          toAccountId,
+          {
+            platform,
+            placeholder_account_id: accountId,
+            to_account_id: toAccountId,
+            repointed: out.repointed ?? null,
+          },
+        );
         sendJson(res, 200, { ok: true, repointed: out.repointed });
         return;
       } catch (e) {

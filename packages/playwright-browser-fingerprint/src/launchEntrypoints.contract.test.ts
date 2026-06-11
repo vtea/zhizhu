@@ -47,6 +47,11 @@ const ALLOWED_RAW_LAUNCH_FILES: ReadonlyArray<{
     reason: "cmdSmoke 仅访问 about:blank 做进程级健康检查；调用处需带 `// allow-raw-launch:` 注释",
     internalsOnly: false,
   },
+  {
+    relPath: "apps/runner/src/ruleRunner/dismissLeadsOverlays.unit.test.ts",
+    reason: "单元测试仅 setContent 本地 HTML fixture，不访问业务域；调用处需带 `// allow-raw-launch:` 注释",
+    internalsOnly: false,
+  },
 ];
 
 const SCAN_DIRS: readonly string[] = [

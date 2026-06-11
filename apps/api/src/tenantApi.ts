@@ -5,7 +5,7 @@ import {
   normEmail,
   normUsername,
 } from "./consoleAuth.js";
-import { applyPlacementStatusAutoTransition } from "./adPlacementStatus.js";
+import { applyPlacementStatusAutoTransitionThrottled } from "./adPlacementStatus.js";
 import { getPool, messageForBusinessError, poolQuery } from "./db.js";
 import {
   sqlDyLeadsEnterpriseIdEqParam,
@@ -128,12 +128,10 @@ export async function listVideos(
 ): Promise<{ items: Record<string, unknown>[]; total: number; page: number; pageSize: number } | DbError> {
   const offset = (page - 1) * pageSize;
   try {
-    await applyPlacementStatusAutoTransition(tenantId);
+    /** 投放状态懒流转（节流）：失败不阻断视频列表——状态最多旧几分钟；缺表等硬错误由下方主查询统一报出 */
+    await applyPlacementStatusAutoTransitionThrottled(tenantId);
   } catch (e) {
-    if (isMissingTable(e)) {
-      return { error: "表不存在，请在 apps/api 执行: npm run migrate", code: "42P01" };
-    }
-    return { error: messageForBusinessError(e) };
+    console.error("[listVideos] 投放状态自动流转失败（降级继续）:", messageForBusinessError(e));
   }
   const params: unknown[] = [tenantId];
   const wh: string[] = ["v.tenant_id = $1"];
@@ -524,7 +522,7 @@ export async function listAdPlacements(
 ): Promise<{ items: Record<string, unknown>[]; total: number; page: number; pageSize: number } | DbError> {
   const offset = (page - 1) * pageSize;
   try {
-    await applyPlacementStatusAutoTransition(tenantId);
+    await applyPlacementStatusAutoTransitionThrottled(tenantId);
     let countParams: unknown[] = [tenantId];
     let where = "WHERE p.tenant_id = $1";
     let listParams: unknown[] = [tenantId];

@@ -4,6 +4,21 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
     labels:
       - dependencies
       - github-actions
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - npm
+    groups:
+      # minor/patch 合并成单 PR，避免 weekly PR 洪水；major 仍单独开
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch

@@ -107,6 +107,13 @@ export function RecommendedVideosPage() {
     return () => window.clearTimeout(t);
   }, [placementFlash]);
 
+  /** 切换主体/租户时关闭投放弹窗并清表单，避免对旧主体视频提交投放 */
+  useEffect(() => {
+    setPlacementVideo(null);
+    setPlacementSpend("");
+    setPlacementErr(null);
+  }, [selectedDyLeadsEnterpriseId, tenantId]);
+
   const query = useQuery({
     queryKey: ["recommended-videos", tenantId, selectedDyLeadsEnterpriseId ?? null],
     queryFn: () => listRecommendedVideos(tenantId, selectedDyLeadsEnterpriseId),

@@ -24,5 +24,13 @@ apps/client/release
 **/test-results
 **/.vite
 
+# 凭据 / 会话等敏感文件，绝不进构建上下文
+**/*.pem
+**/*.p12
+**/*.pfx
+**/.auth
+**/storageState*.json
+storage/
+
 # 可选：若构建仅需 API/Web，可取消下行注释以进一步减小上下文（须同步调整 Dockerfile 仅 COPY 所需路径）
 # tools/playwright-field-probe

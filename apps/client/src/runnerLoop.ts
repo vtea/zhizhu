@@ -107,7 +107,7 @@ export type RunnerLoopCurrentAccountProgress = {
   currentStepIndex?: number;
   stepPhase?: "start" | "ok" | "fail";
   stepError?: string;
-  phase: "running" | "captured" | "posting" | "posted" | "failed";
+  phase: "running" | "posting" | "posted" | "failed";
   written?: number;
   skipped?: number;
   rowsPosted?: number;
@@ -697,6 +697,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastErrorCode: "VALIDATION_FAILED",
       lastErrorMessage: "task 缺少 rule_id",
       currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
     });
     /** 未进入 try/finally；PATCH 期间用户点中止时须清标志 */
     clearRunnerLoopTaskCancel();
@@ -743,16 +745,28 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastErrorCode: "RUNNER_INCOMPATIBLE",
       lastErrorMessage: "未找到匹配的 Playwright 配置",
       currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
     });
     clearRunnerLoopTaskCancel();
     return true;
   }
 
-  /** 标记 running，并记录 currentTaskId */
-  writeStatus(app, { ...prev, currentTaskId: task.id });
+  /** 标记 running，并记录 currentTaskId；同时清空上一任务可能残留的户级进度，避免 UI 串显 */
+  writeStatus(app, {
+    ...prev,
+    currentTaskId: task.id,
+    currentAccountProgress: null,
+    currentAccountIngestResults: [],
+  });
   const runRes = await patchTask(ctx, task.id, { status: "running" });
   if (!runRes.ok) {
-    writeStatus(app, { ...prev, currentTaskId: null });
+    writeStatus(app, {
+      ...prev,
+      currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
+    });
     /** 未进入下方 try/finally；用户若在 PATCH 期间点中止，须在此清标志，避免污染下一任务 */
     clearRunnerLoopTaskCancel();
     return false;
@@ -793,6 +807,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastErrorCode: "USER_CANCELLED",
       lastErrorMessage: "用户已中止执行。",
       currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
       lastPolledAt: new Date().toISOString(),
       lastPollErrorStatus: null,
       lastPollErrorMessage: null,
@@ -831,6 +847,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         lastErrorCode: "RUNNER_INCOMPATIBLE",
         lastErrorMessage: `加载文件规则失败（${ruleId}）`,
         currentTaskId: null,
+        currentAccountProgress: null,
+        currentAccountIngestResults: [],
       });
       return true;
     }
@@ -894,6 +912,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastErrorCode: ec,
       lastErrorMessage: errMsg,
       currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
     });
     return true;
   }
@@ -1067,6 +1087,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastErrorCode: "VALIDATION_FAILED",
       lastErrorMessage: reason,
       currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
       lastPolledAt: new Date().toISOString(),
       lastPollErrorStatus: null,
       lastPollErrorMessage: null,
@@ -1099,6 +1121,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastErrorCode: "VALIDATION_FAILED",
       lastErrorMessage: "enterprise_all_accounts 模式缺少可循环的业务账号",
       currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
       lastPolledAt: new Date().toISOString(),
       lastPollErrorStatus: null,
       lastPollErrorMessage: null,
@@ -1132,6 +1156,8 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       lastErrorCode: "VALIDATION_FAILED",
       lastErrorMessage: reason,
       currentTaskId: null,
+      currentAccountProgress: null,
+      currentAccountIngestResults: [],
       lastPolledAt: new Date().toISOString(),
       lastPollErrorStatus: null,
       lastPollErrorMessage: null,
@@ -1234,15 +1260,16 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
     });
   };
 
+  /** 先做取消检查再建 debouncer：保证早退路径上不可能有未投递的步进定时器复活陈旧进度 */
+  if (await bailIfUserCancelled()) {
+    return true;
+  }
   const accountRunProgressDebouncer = createRunnerStepProgressDebouncer<RunnerLoopCurrentAccountProgress>({
     delayMs: RUNNER_STEP_PROGRESS_DEBOUNCE_MS,
     deliver: doWriteAccountRunProgress,
   });
   const writeAccountRunProgress = (next: RunnerLoopCurrentAccountProgress): void =>
     accountRunProgressDebouncer.emitProgress(next);
-  if (await bailIfUserCancelled()) {
-    return true;
-  }
   for (let i = 0; i < accountRunList.length; i++) {
     if (isRunnerLoopTaskCancelRequested()) {
       onLogLine(`[runner-loop] 用户中止，停止后续账号（已完成 ${i}/${accountRunList.length}）`);

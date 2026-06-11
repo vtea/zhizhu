@@ -254,11 +254,39 @@ ipcRenderer.on("request-tab", (_event: IpcRendererEvent, tabId: unknown) => {
 
 /** B 套：试跑户级进度（与 `automationRuleTrialRun.emitTrialProgress` 对齐）；以"最新注册回调"为准 */
 let trialProgressHandler: ((p: AutomationRuleTrialAccountProgressDto) => void) | null = null;
+
+const TRIAL_PROGRESS_PHASES: ReadonlySet<string> = new Set([
+  "running",
+  "posting",
+  "posted",
+  "failed",
+]);
+
+/** 最小 schema 校验：必填字段类型不符则整条丢弃，避免畸形 payload 直接进入 React 状态 */
+function isTrialProgressPayload(p: unknown): p is AutomationRuleTrialAccountProgressDto {
+  if (!p || typeof p !== "object" || Array.isArray(p)) return false;
+  const o = p as Record<string, unknown>;
+  return (
+    typeof o.runId === "string" &&
+    o.runId.length > 0 &&
+    typeof o.accountId === "string" &&
+    typeof o.index === "number" &&
+    Number.isFinite(o.index) &&
+    typeof o.total === "number" &&
+    Number.isFinite(o.total) &&
+    typeof o.phase === "string" &&
+    TRIAL_PROGRESS_PHASES.has(o.phase)
+  );
+}
+
 ipcRenderer.on("automation-rule-trial-progress", (_event: IpcRendererEvent, payload: unknown) => {
   if (!trialProgressHandler) return;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+  if (!isTrialProgressPayload(payload)) {
+    console.error("[zhizhu-client preload] 丢弃畸形 automation-rule-trial-progress payload", payload);
+    return;
+  }
   try {
-    trialProgressHandler(payload as AutomationRuleTrialAccountProgressDto);
+    trialProgressHandler(payload);
   } catch (e) {
     console.error("[zhizhu-client preload] 执行 automation-rule-trial-progress 回调失败", e);
   }

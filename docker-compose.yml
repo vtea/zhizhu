@@ -4,9 +4,14 @@
 #   npm run deploy:prod
 #   bash deploy/deploy.sh --domain https://console.example.com --rebuild
 #
+# 从 GitHub 一键更新（git pull 后自动重建并部署）：
+#   bash deploy/update.sh
+#
 # 手动：
 #   cp .env.docker.example .env   # 或 npm run bootstrap:env 后补 JWT_* / PUBLIC_ORIGIN
-#   docker compose build && docker compose up -d
+#   docker compose build
+#   docker compose --profile bundled-db up -d   # 内置 Postgres（postgres 服务在 bundled-db profile 下）
+#   docker compose up -d                        # 外置数据库（DATABASE_URL 指向 RDS 等）
 #   curl -fsS http://127.0.0.1:${WEB_HOST_PORT:-8080}/health
 #
 # 外置 RDS：见 deploy/docker-compose.external-db.yml.example
@@ -94,7 +99,7 @@ services:
     networks:
       - zhizhu
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6

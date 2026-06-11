@@ -243,7 +243,6 @@
       "wait_capture_key": "high_dive_wlz_payload",
       "wait_capture_timeout_ms": 45000,
       "wait_capture_retry_timeout_ms": 60000,
-      "optional": true,
       "next_button_selector": {
         "kind": "css",
         "value": ".leads-pager-next:not([disabled])",
@@ -262,7 +261,6 @@
       "wait_capture_key": "high_dive_ylz_payload",
       "wait_capture_timeout_ms": 45000,
       "wait_capture_retry_timeout_ms": 60000,
-      "optional": true,
       "next_button_selector": {
         "kind": "css",
         "value": ".leads-pager-next:not([disabled])",

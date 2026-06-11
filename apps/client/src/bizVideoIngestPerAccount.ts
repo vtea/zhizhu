@@ -161,18 +161,16 @@ function deriveRowsForOneAccount(
   };
 }
 
-/** Runner 直出 rows 与 captures 推导 rows 按 dy_video_id 去重合并（与原 runnerLoop 1413–1434 块行为一致）。 */
+/**
+ * Runner 直出 rows 与 captures 推导 rows 按 dy_video_id 去重合并。
+ * 注意：`derived` 为空时也必须对 runnerOutputRows 自身去重（Runner 可能输出重复行），
+ * 不能整组直接透传——否则依赖 API `ON CONFLICT` 兜底，徒增 POST 体积与 skipped 噪声。
+ */
 function mergeAndDedupeRows(
   derived: Record<string, unknown>[],
   runnerOutputRows: Record<string, unknown>[],
   accountIdFallback: string,
 ): Record<string, unknown>[] {
-  if (runnerOutputRows.length === 0) {
-    return derived.map((r) => withAccountIdFallback(r, accountIdFallback));
-  }
-  if (derived.length === 0) {
-    return runnerOutputRows.map((r) => withAccountIdFallback(r, accountIdFallback));
-  }
   const out: Record<string, unknown>[] = [...derived.map((r) => withAccountIdFallback(r, accountIdFallback))];
   const seen = new Set<string>();
   for (const r of out) {

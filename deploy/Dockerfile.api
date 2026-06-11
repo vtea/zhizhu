@@ -33,6 +33,10 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/apps/api ./apps/api
 
+# 以基础镜像自带的非特权用户 node 运行；数据卷目录预建并授权（首次挂载命名卷时继承属主）
+RUN mkdir -p /data/zhizhu/video-covers && chown -R node:node /data/zhizhu
+USER node
+
 EXPOSE 3000
 # 迁移幂等；亦可在 Compose 中改 command 仅启动 index
 CMD ["sh", "-c", "node apps/api/dist/migrate.js && node apps/api/dist/index.js"]

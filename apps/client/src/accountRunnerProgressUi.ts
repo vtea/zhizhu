@@ -9,8 +9,6 @@ export function accountRunnerProgressPhaseLabel(phase: AccountRunnerProgressPhas
   switch (phase) {
     case "running":
       return "采集中";
-    case "captured":
-      return "采集完成";
     case "posting":
       return "入库中";
     case "posted":

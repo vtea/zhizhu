@@ -207,12 +207,11 @@ export type AutomationRuleTrialAccountProgressDto = {
   stepError?: string;
   /**
    * - `running`：子进程已 spawn / wait
-   * - `captured`：子进程结束（capture_ok=true）但尚未 POST
-   * - `posting`：正在 POST `/runner/file-rule-ingest`
+   * - `posting`：正在 POST `/runner/file-rule-ingest`（子进程结束后立即进入）
    * - `posted`：POST 成功，含 `written / skipped`
    * - `failed`：capture / ingest 任一失败
    */
-  phase: "running" | "captured" | "posting" | "posted" | "failed";
+  phase: "running" | "posting" | "posted" | "failed";
   written?: number;
   skipped?: number;
   rowsPosted?: number;
@@ -326,7 +325,7 @@ export type AutomationRuleRunnerLoopStatusDto = {
     currentStepIndex?: number;
     stepPhase?: "start" | "ok" | "fail";
     stepError?: string;
-    phase: "running" | "captured" | "posting" | "posted" | "failed";
+    phase: "running" | "posting" | "posted" | "failed";
     written?: number;
     skipped?: number;
     rowsPosted?: number;
