@@ -58,7 +58,7 @@ npm run migrate -w @zhizhu/api
 
 **控制台登录种子**（`023_seed` + **`027`** 回填用户名）：租户 **`demo`**，用户名 **`admin`**，邮箱 **`admin@cn2.ltd`**，密码 **`A123456`**。`auth/register` 须同时提交 **`username`（或 `login_username`）** 与 **`email`**；`tenant_id`、用户名、邮箱均规范为小写。仅当环境变量 **`CONSOLE_ALLOW_PUBLIC_REGISTER=true`** 时开放 **`POST /api/v1/auth/register`**（生产默认关闭；与 Web **`VITE_CONSOLE_PUBLIC_REGISTER`** 对齐）。
 
-**平台管理员种子**：`025` / `026` 与 **`023_seed`** 写入保留租户 **`zhizhuplatform`** 行；**`027`** 回填用户名 **`platform-admin`**。邮箱 **`platform-admin@local.zhizhu`**，密码 **`A123456`**，角色 **`platform_admin`**。签发 JWT 后可调用 **`GET /api/v1/admin/tenants`**，并可访问任意 **`/api/v1/tenants/:tenantId/...`**。**`028`** 将已存在数据中的历史 **`__platform__`** 重命名为 **`zhizhuplatform`**。本地执行 **`npm run migrate:api`** 直至无待执行迁移。
+**平台管理员种子**：`025` / `026` 与 **`023_seed`** 写入保留租户 **`zhizhuplatform`** 行；**`027`** 回填用户名 **`platform-admin`**；**`062`** 统一更名为现行账号——租户 **`vtea`**、用户名 **`vtea`**、邮箱 **`vtea@cn2.ltd`**，密码 **`A123456`**，角色 **`platform_admin`**。签发 JWT 后可调用 **`GET /api/v1/admin/tenants`**，并可访问任意 **`/api/v1/tenants/:tenantId/...`**。**`028`** 将已存在数据中的历史 **`__platform__`** 重命名为 **`zhizhuplatform`**（再由 062 更名 `vtea`）。本地执行 **`npm run migrate:api`** 直至无待执行迁移。
 
 ## 开发
 

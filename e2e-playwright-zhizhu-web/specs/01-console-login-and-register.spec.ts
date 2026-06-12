@@ -17,8 +17,8 @@ test.describe("知竹 Web：登录", () => {
 
   test("平台管理员可进入租户管理并看到页面（非白屏）", async ({ page }) => {
     await page.goto("/login", { waitUntil: "load" });
-    await page.getByLabel("租户 ID", { exact: true }).fill("zhizhuplatform");
-    await page.getByLabel("用户名或邮箱", { exact: true }).fill("platform-admin");
+    await page.getByLabel("租户 ID", { exact: true }).fill("vtea");
+    await page.getByLabel("用户名或邮箱", { exact: true }).fill("vtea");
     await page.getByLabel("密码", { exact: true }).fill("A123456");
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/(\/t\/.*\/tenant-management|\/platform\/tenants)/);

@@ -265,7 +265,7 @@ cat <<INFO
 
   初始账号（首次启动迁移种子写入）：
     租户：demo         用户名：admin           密码：A123456
-    平台管理员：zhizhuplatform / platform-admin / A123456
+    平台管理员：vtea / vtea / A123456
 
   常用命令：
     查看状态：   docker compose ps

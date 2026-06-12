@@ -3,7 +3,13 @@ FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-RUN apt-get update \
+# 可选镜像源（构建主机访问 deb.debian.org / registry.npmjs.org 缓慢或不可达时，
+# 在 .env 配置 DEBIAN_MIRROR / NPM_REGISTRY，由 docker-compose.yml 注入；默认留空走官方源）
+ARG DEBIAN_MIRROR=
+ARG NPM_REGISTRY=
+
+RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources; fi \
+  && apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
@@ -12,19 +18,23 @@ COPY packages ./packages
 COPY apps ./apps
 
 # 仅安装 @zhizhu/api 及其 workspace 依赖树，避免拉起 client/electron-builder（tar/glob 等弃用警告）
-RUN npm ci -w @zhizhu/api --include-workspace-root \
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY" --location=global; fi \
+  && npm ci -w @zhizhu/api --include-workspace-root \
   && npm run build -w @zhizhu/playwright-shell-contract \
   && npm run build -w @zhizhu/playwright-rule-schema \
   && npm run build -w @zhizhu/biz-account-auth-status \
   && npm run build -w @zhizhu/api \
-  && npm prune --omit=dev
+  # --ignore-scripts：prune 阶段 @types/* 已被裁剪，若再触发 biz-account-auth-status 的 postinstall 重建会报 TS2688
+  && npm prune --omit=dev --ignore-scripts
 
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-RUN apt-get update \
+ARG DEBIAN_MIRROR=
+RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources; fi \
+  && apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 

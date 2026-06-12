@@ -370,6 +370,8 @@ function humanSkipReasonSummaryTitle(key: string): string {
       return "企业主体未关联";
     case "enterprise_register_failed":
       return "企业主体登记失败";
+    case "revoked_not_in_system":
+      return "已撤销且系统中不存在";
     case "invalid_counts":
       return "计数无效";
     case "ingest_specific":

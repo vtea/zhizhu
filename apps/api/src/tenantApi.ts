@@ -12,7 +12,7 @@ import {
   sqlDyLeadsEnterpriseIdInScopeArray,
   type EnterpriseScopeFilter,
 } from "./enterpriseScope.js";
-import { LEGACY_PLATFORM_TENANT_ID, RESERVED_PLATFORM_TENANT_ID } from "./jwt.js";
+import { LEGACY_PLATFORM_TENANT_IDS, RESERVED_PLATFORM_TENANT_ID, isPlatformTenantSlug } from "./jwt.js";
 import { assertTenantAllowsNewConsoleUser } from "./tenantEntitlement.js";
 
 function isMissingTable(e: unknown): boolean {
@@ -1321,10 +1321,9 @@ async function listAdminTenantsFromBizDataOnly(): Promise<
        ) d
        WHERE tenant_id IS NOT NULL
          AND trim(tenant_id::text) <> ''
-         AND lower(trim(tenant_id::text)) <> lower($1::text)
-         AND lower(trim(tenant_id::text)) <> lower($2::text)
+         AND lower(trim(tenant_id::text)) <> ALL($1::text[])
        ORDER BY 1`,
-      [RESERVED_PLATFORM_TENANT_ID, LEGACY_PLATFORM_TENANT_ID],
+      [[RESERVED_PLATFORM_TENANT_ID, ...LEGACY_PLATFORM_TENANT_IDS]],
     );
     const tenantsBare = r.rows.map((row) => String((row as { tenant_id: string }).tenant_id));
     let countMap = new Map<string, number>();
@@ -1408,14 +1407,13 @@ export async function listAdminTenants(): Promise<
          ) d
          WHERE tenant_id IS NOT NULL
            AND trim(tenant_id::text) <> ''
-           AND lower(trim(tenant_id::text)) <> lower($1::text)
-           AND lower(trim(tenant_id::text)) <> lower($2::text)
+           AND lower(trim(tenant_id::text)) <> ALL($1::text[])
          UNION
          SELECT tenant_id::text AS tid FROM biz_platform_tenant
        ) t
        LEFT JOIN biz_platform_tenant p ON p.tenant_id = t.tid
        ORDER BY t.tid`,
-      [RESERVED_PLATFORM_TENANT_ID, LEGACY_PLATFORM_TENANT_ID],
+      [[RESERVED_PLATFORM_TENANT_ID, ...LEGACY_PLATFORM_TENANT_IDS]],
     );
     const tenants: AdminTenantListItem[] = r.rows.map((row) =>
       mapAdminTenantListRow(
@@ -1462,7 +1460,7 @@ export async function createPlatformRegistryTenant(
   if (!isValidTenantSlug(tid)) {
     return { ok: false, error: "tenant_id 须 1–63 位，小写，数字或字母开头，可含下划线、连字符", code: "bad_request" };
   }
-  if (tid === RESERVED_PLATFORM_TENANT_ID || tid === LEGACY_PLATFORM_TENANT_ID) {
+  if (isPlatformTenantSlug(tid)) {
     return { ok: false, error: "该租户 ID 为平台保留，不可登记为业务租户", code: "bad_request" };
   }
   const dn = displayName?.trim() || null;
@@ -1665,7 +1663,7 @@ export async function createPlatformRegistryConsoleUser(
   if (!isValidTenantSlug(tid)) {
     return { ok: false, error: "tenant_id 无效", code: "bad_request" };
   }
-  if (tid === RESERVED_PLATFORM_TENANT_ID || tid === LEGACY_PLATFORM_TENANT_ID) {
+  if (isPlatformTenantSlug(tid)) {
     return { ok: false, error: "不可在平台保留租户下通过此接口开号", code: "bad_request" };
   }
   const username = normUsername(usernameRaw);

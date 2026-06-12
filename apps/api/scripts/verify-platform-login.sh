@@ -9,15 +9,15 @@ curl -sSf "$API_BASE/health" > /dev/null
 CODE=$(
   curl -sS -o "$OUT" -w '%{http_code}' -X POST "$API_BASE/api/v1/auth/login" \
     -H "Content-Type: application/json" \
-    -d '{"tenant_id":"zhizhuplatform","login_identifier":"platform-admin","password":"A123456"}' \
+    -d '{"tenant_id":"vtea","login_identifier":"vtea","password":"A123456"}' \
 )
 if [ "$CODE" != "200" ]; then
   echo "verify-platform-login: expected HTTP 200, got $CODE" >&2
   cat "$OUT" >&2
   exit 1
 fi
-if ! grep -q '"tenant_id":"zhizhuplatform"' "$OUT" && ! grep -q '"tenant_id": "zhizhuplatform"' "$OUT"; then
-  echo "verify-platform-login: response must contain tenant_id zhizhuplatform" >&2
+if ! grep -q '"tenant_id":"vtea"' "$OUT" && ! grep -q '"tenant_id": "vtea"' "$OUT"; then
+  echo "verify-platform-login: response must contain tenant_id vtea" >&2
   cat "$OUT" >&2
   exit 1
 fi

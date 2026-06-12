@@ -57,6 +57,11 @@ import {
 } from "./runnerProcess";
 import { mergeDyHomepageUrlIntoParams } from "./bizVideoDyHomepageMerge";
 import {
+  formatBizVideoOpsSkippedAccountZh,
+  splitBizVideoRunListByOpsStatus,
+  type BizVideoOpsSkippedAccount,
+} from "./bizVideoOpsStatusFilter";
+import {
   canonicalizeDouyinUserHomepageUrlSync,
   resolveBizVideoRunnerAccountsUserUrls,
   resolveBizVideoTaskParamsHomepageUrls,
@@ -1034,7 +1039,7 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
         : defaultAccountId.length > 0
           ? [defaultAccountId]
           : [];
-  const accountRunList =
+  let accountRunList =
     inferredIngestTarget === "biz_video" && mode === "enterprise_all_accounts"
       ? Array.from(new Set(enterpriseRunIdsRaw))
       : Array.from(new Set([singleAccountCandidate].filter((x) => x.length > 0)));
@@ -1195,6 +1200,63 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
     } else {
       bizVideoAccountsFetchError = accList.message;
       bizVideoOpsAccounts = [];
+    }
+  }
+  /**
+   * 已暂停 / 已撤销（ops_status=paused/revoked）账号在执行阶段不采集：payload.account_ids 在任务创建时
+   * 已冻结，账号随后被暂停/撤销时此处兜底剔除。档案拉取失败（bizVideoAccountsFetchError）时不过滤，
+   * 保持原行为，不因查询失败阻断任务。
+   */
+  let opsStatusSkippedAccounts: BizVideoOpsSkippedAccount[] = [];
+  if (inferredIngestTarget === "biz_video" && bizVideoAccountsFetchError === null) {
+    const split = splitBizVideoRunListByOpsStatus(accountRunList, bizVideoOpsAccounts);
+    opsStatusSkippedAccounts = split.skipped;
+    if (split.skipped.length > 0) {
+      accountRunList = split.eligible;
+      for (const s of split.skipped) {
+        onLogLine(`[runner-loop] 账号运营状态过滤：跳过 ${formatBizVideoOpsSkippedAccountZh(s)}，不采集视频`);
+      }
+    }
+    if (accountRunList.length === 0) {
+      const reason = `全部 ${split.skipped.length} 个账号均已暂停/已撤销，本次跳过采集。`;
+      onLogLine(`[runner-loop] ${reason} task=${task.id}`);
+      const skippedSummary: Record<string, unknown> = {
+        reason,
+        rows_count: 0,
+        account_runs: 0,
+        skipped_inactive_accounts: split.skipped,
+        skipped_inactive_accounts_message_zh: reason,
+        rule_version: effectiveRuleVersion,
+      };
+      await patchTask(ctx, task.id, {
+        status: "succeeded",
+        result_summary: skippedSummary,
+      });
+      finishCloudTaskLedger(app, {
+        taskId: task.id,
+        ruleId,
+        ruleVersion: effectiveRuleVersion ?? ruleVersionForLedger,
+        startedAt: cloudRunStartedAt,
+        ok: true,
+        errorCode: null,
+        summary: skippedSummary,
+        ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
+      });
+      writeStatus(app, {
+        ...readStatus(app),
+        lastTaskId: task.id,
+        lastFinishedAt: new Date().toISOString(),
+        lastOk: true,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        currentTaskId: null,
+        currentAccountProgress: null,
+        currentAccountIngestResults: [],
+        lastPolledAt: new Date().toISOString(),
+        lastPollErrorStatus: null,
+        lastPollErrorMessage: null,
+      });
+      return true;
     }
   }
   /** 未在 payload 显式指定 Playwright 配置时，与试跑一致按「设备 × 业务账号」登记选用 profile（含 enterprise 每户可能不同） */
@@ -1760,6 +1822,14 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
       error_code: "USER_CANCELLED",
       error_message: "用户已中止执行。",
     };
+  }
+
+  if (opsStatusSkippedAccounts.length > 0) {
+    const rs = patchBody.result_summary as Record<string, unknown>;
+    rs.skipped_inactive_accounts = opsStatusSkippedAccounts;
+    rs.skipped_inactive_accounts_message_zh = `已跳过 ${opsStatusSkippedAccounts.length} 个已暂停/已撤销账号：${opsStatusSkippedAccounts
+      .map((a) => formatBizVideoOpsSkippedAccountZh(a))
+      .join("；")}`;
   }
 
   const patchR = await patchTask(ctx, task.id, patchBody);

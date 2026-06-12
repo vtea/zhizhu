@@ -1,0 +1,50 @@
+name: Client dist (macOS DMG)
+
+# 手动：Actions → 本 workflow → Run workflow
+# push：默认分支且 apps/client 或相关 workspace 变更时自动打 dy 域名 DMG
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - trunk
+    paths:
+      - ".github/workflows/client-dist-mac.yml"
+      - "apps/client/**"
+      - "apps/runner/**"
+      - "packages/playwright-shell-contract/**"
+      - "packages/biz-account-auth-status/**"
+      - "packages/playwright-rule-schema/**"
+      - "package-lock.json"
+      - "package.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-dist-mac-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dist-mac-dy:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build macOS DMG (dy.gaiasc.com)
+        run: npm run dist:client:mac:dy
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886fbf27e350
+        with:
+          name: zhizhu-client-mac-dy
+          path: apps/client/release/*.dmg
+          retention-days: 30
+          if-no-files-found: error

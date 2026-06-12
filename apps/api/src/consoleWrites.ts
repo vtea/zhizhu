@@ -123,6 +123,7 @@ export type FileRuleSkipReason =
   | "missing_fields"
   | "no_account_match"
   | "no_enterprise_id"
+  | "revoked_not_in_system"
   | "ingest_specific";
 
 export type FileRuleSkipDetailIdentity = {
@@ -3024,7 +3025,7 @@ export async function ingestEmployeePersonalAuthRows(
       ok: true;
       written: number;
       skipped: number;
-      skip_reasons: { missing_fields: number; enterprise_register_failed: number };
+      skip_reasons: { missing_fields: number; enterprise_register_failed: number; revoked_not_in_system: number };
       skip_details: FileRuleSkipDetail[];
       skip_details_truncated: boolean;
     }
@@ -3041,10 +3042,46 @@ export async function ingestEmployeePersonalAuthRows(
   const platform = pickStr(defaults.platform) ?? "douyin";
   const accountKind = pickStr(defaults.account_kind) ?? "personal_authorized";
 
-  const skipReasons = { missing_fields: 0, enterprise_register_failed: 0 };
+  const skipReasons = { missing_fields: 0, enterprise_register_failed: 0, revoked_not_in_system: 0 };
   const skipBuf = new SkipDetailBuffer();
   let written = 0;
   let skipped = 0;
+  /**
+   * 已撤销账号「仅更新已存在、不存在不新增」：先批量查出本批 revoked 行中已在库的 account_id，
+   * 主循环里 revoked 且不在库 → 跳过（revoked_not_in_system），避免把已撤销授权写成新员工账号。
+   */
+  const revokedCandidateIds = new Set<string>();
+  for (const srcRow of rows) {
+    const row = applyFieldMap(srcRow, fieldMap);
+    const accountId = coerceRowAccountIdToIngestString(row.account_id);
+    if (!accountId) {
+      continue;
+    }
+    const authCanonical = canonicalAuthStatusForBizAccountIngest(
+      coerceRowAuthStatusToIngestString(row.auth_status),
+    );
+    if (authCanonical === "revoked") {
+      revokedCandidateIds.add(accountId);
+    }
+  }
+  const existingAccountIds = new Set<string>();
+  if (revokedCandidateIds.size > 0) {
+    try {
+      const r = await poolQuery(
+        `SELECT account_id FROM biz_account
+          WHERE tenant_id = $1 AND platform = $2 AND account_id = ANY($3::text[])`,
+        [tenantId, platform, Array.from(revokedCandidateIds)],
+      );
+      for (const er of r.rows as Array<{ account_id: unknown }>) {
+        const id = pickStr(er.account_id);
+        if (id) {
+          existingAccountIds.add(id);
+        }
+      }
+    } catch (e) {
+      return { ok: false, error: messageForBusinessError(e) };
+    }
+  }
   for (const srcRow of rows) {
     const row = applyFieldMap(srcRow, fieldMap);
     const accountId = coerceRowAccountIdToIngestString(row.account_id);
@@ -3056,6 +3093,26 @@ export async function ingestEmployeePersonalAuthRows(
         identity: {},
         message_zh:
           "字段缺失：本行缺少抖音业务账号标识（account_id），无法写入员工账号表。请检查采集映射或接口字段。",
+      });
+      continue;
+    }
+    /**
+     * 已撤销且系统中不存在 → 不新增（放在企业主体登记之前，避免为不会入库的行产生登记副作用）。
+     * 已存在的账号继续走 upsert：ON CONFLICT DO UPDATE 会把 auth_status / ops_status 置 revoked 并写 revoked_at。
+     */
+    const authCanonicalEarly = canonicalAuthStatusForBizAccountIngest(
+      coerceRowAuthStatusToIngestString(row.auth_status),
+    );
+    if (authCanonicalEarly === "revoked" && !existingAccountIds.has(accountId)) {
+      skipped++;
+      skipReasons.revoked_not_in_system++;
+      skipBuf.tryPush({
+        reason: "revoked_not_in_system",
+        identity: {
+          account_id: accountId,
+          source_display_name: pickStr(row.dy_display_name),
+        },
+        message_zh: `授权已撤销且系统中不存在该员工账号（account_id ${accountId}），按规则不予新增同步。`,
       });
       continue;
     }
@@ -3083,8 +3140,7 @@ export async function ingestEmployeePersonalAuthRows(
         const canon = await resolveLeadsEnterpriseIdCanonical(tenantId, entId);
         accountEnterpriseId = canon.ok ? canon.dy_leads_enterprise_id : entId;
       }
-      const authRaw = coerceRowAuthStatusToIngestString(row.auth_status);
-      const authCanonical = canonicalAuthStatusForBizAccountIngest(authRaw);
+      const authCanonical = authCanonicalEarly;
       const isAuthRevoked = authCanonical === "revoked";
       const opsStatusInsert = isAuthRevoked ? "revoked" : null;
       const revokedAtInsert = isAuthRevoked ? new Date() : null;
@@ -3148,6 +3204,8 @@ export async function ingestEmployeePersonalAuthRows(
         ],
       );
       written++;
+      /** 同批后续 revoked 行若指向本行刚写入的账号，应按「已存在」走更新而非误跳过 */
+      existingAccountIds.add(accountId);
     } catch (e) {
       return { ok: false, error: messageForBusinessError(e) };
     }

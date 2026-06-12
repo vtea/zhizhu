@@ -39,8 +39,8 @@ test.describe("知竹 Web：demo 登录后内页", () => {
 test.describe("知竹 Web：平台管理员登录后内页", () => {
   test("可切到业务租户 demo 并打开数据大盘", async ({ page }) => {
     await page.goto("/login", { waitUntil: "load" });
-    await page.getByLabel("租户 ID", { exact: true }).fill("zhizhuplatform");
-    await page.getByLabel("用户名或邮箱", { exact: true }).fill("platform-admin");
+    await page.getByLabel("租户 ID", { exact: true }).fill("vtea");
+    await page.getByLabel("用户名或邮箱", { exact: true }).fill("vtea");
     await page.getByLabel("密码", { exact: true }).fill("A123456");
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/\/t\/.*\/tenant-management/);
@@ -52,8 +52,8 @@ test.describe("知竹 Web：平台管理员登录后内页", () => {
 
   test("系统设置-邮件（SMTP）对平台管理员可见（全站发信配置）", async ({ page }) => {
     await page.goto("/login", { waitUntil: "load" });
-    await page.getByLabel("租户 ID", { exact: true }).fill("zhizhuplatform");
-    await page.getByLabel("用户名或邮箱", { exact: true }).fill("platform-admin");
+    await page.getByLabel("租户 ID", { exact: true }).fill("vtea");
+    await page.getByLabel("用户名或邮箱", { exact: true }).fill("vtea");
     await page.getByLabel("密码", { exact: true }).fill("A123456");
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/\/t\/.*\/tenant-management/);

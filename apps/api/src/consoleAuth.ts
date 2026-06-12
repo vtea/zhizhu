@@ -1,7 +1,12 @@
 import crypto from "node:crypto";
 import type { QueryResult } from "pg";
 import { getPool, messageForBusinessError, poolQuery } from "./db.js";
-import { LEGACY_PLATFORM_TENANT_ID, PLATFORM_ADMIN_ROLE, RESERVED_PLATFORM_TENANT_ID } from "./jwt.js";
+import {
+  LEGACY_PLATFORM_TENANT_IDS,
+  PLATFORM_ADMIN_ROLE,
+  RESERVED_PLATFORM_TENANT_ID,
+  isPlatformTenantSlug,
+} from "./jwt.js";
 import { assertTenantAllowsConsoleLogin, assertTenantAllowsNewConsoleUser } from "./tenantEntitlement.js";
 
 /** `Pool` / `PoolClient`：控制台用户插入可在事务内复用 */
@@ -230,7 +235,7 @@ export async function registerConsoleUser(
   if (!tid) {
     return { ok: false, error: "tenant_id 无效" };
   }
-  if (tid === RESERVED_PLATFORM_TENANT_ID) {
+  if (isPlatformTenantSlug(tid)) {
     return { ok: false, error: "该租户 ID 为平台保留，不可自助注册" };
   }
   const username = normUsername(usernameRaw);
@@ -344,11 +349,11 @@ export async function loginConsoleUser(
   }
   const row = await findConsoleUserRow(tid, loginTrim);
   if (!row) {
-    if (tid === RESERVED_PLATFORM_TENANT_ID || tid === LEGACY_PLATFORM_TENANT_ID) {
+    if (isPlatformTenantSlug(tid)) {
       return {
         ok: false,
         error:
-          "未找到平台管理员账号：请在仓库根执行 npm run migrate:api（将应用 025 / 026 / 027 或全新库中已合入的 023_seed，且建议执行 028 将保留租户名迁移为现代码一致）",
+          "未找到平台管理员账号：请在仓库根执行 npm run migrate:api（将应用 025 / 026 / 027 或全新库中已合入的 023_seed，并由 062 将保留租户与账号更名为现代码一致）",
       };
     }
     return { ok: false, error: "用户名或邮箱或密码错误" };
@@ -360,8 +365,9 @@ export async function loginConsoleUser(
   }
   const dbTenant = String(row.tenant_id ?? "");
   /** 会话与 JWT 一律用新名，避免已登录态仍带历史 id */
-  const sessionTid =
-    dbTenant.toLowerCase() === LEGACY_PLATFORM_TENANT_ID.toLowerCase() ? RESERVED_PLATFORM_TENANT_ID : dbTenant;
+  const sessionTid = LEGACY_PLATFORM_TENANT_IDS.includes(dbTenant.toLowerCase())
+    ? RESERVED_PLATFORM_TENANT_ID
+    : dbTenant;
   const gate = await assertTenantAllowsConsoleLogin(sessionTid);
   if (!gate.ok) {
     return { ok: false, error: gate.error };
@@ -407,11 +413,11 @@ async function findConsoleUserRow(
     const r2 = await poolQuery(
       `SELECT id::text AS id, tenant_id, login_username, email, password_salt, password_hash, display_name, roles
        FROM biz_console_user
-       WHERE tenant_id = $1
+       WHERE lower(tenant_id) = ANY($1::text[])
          AND (lower(email) = lower($2) OR lower(login_username) = lower($2))
        ORDER BY id ASC
        LIMIT 1`,
-      [LEGACY_PLATFORM_TENANT_ID, loginTrim],
+      [LEGACY_PLATFORM_TENANT_IDS, loginTrim],
     );
     return r2.rows[0] as Record<string, unknown> | undefined;
   }

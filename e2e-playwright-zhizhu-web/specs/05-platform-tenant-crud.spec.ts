@@ -6,8 +6,8 @@ import { expect, test } from "@playwright/test";
 test.describe("知竹 Web：平台租户管理", () => {
   test("存在登记新租户入口与数据表", async ({ page }) => {
     await page.goto("/login", { waitUntil: "load" });
-    await page.getByLabel("租户 ID", { exact: true }).fill("zhizhuplatform");
-    await page.getByLabel("用户名或邮箱", { exact: true }).fill("platform-admin");
+    await page.getByLabel("租户 ID", { exact: true }).fill("vtea");
+    await page.getByLabel("用户名或邮箱", { exact: true }).fill("vtea");
     await page.getByLabel("密码", { exact: true }).fill("A123456");
     await page.getByRole("button", { name: "登录" }).click();
     await expect(page).toHaveURL(/tenant-management/);

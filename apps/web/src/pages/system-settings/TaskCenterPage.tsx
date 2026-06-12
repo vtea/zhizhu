@@ -31,6 +31,28 @@ import { Link } from "react-router-dom";
 const PAGE_SIZE = 12;
 const RUN_PAGE_SIZE = 15;
 
+/** 规则形态：决定新建任务弹窗显示哪些参数字段（meta.target 优先，缺失时按 rule_id/名称启发式兜底）。 */
+type TaskRuleKind = "none" | "video" | "lead" | "employee_auth" | "generic";
+
+function isoDateLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function defaultLeadStartDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return isoDateLocal(d);
+}
+
+function defaultLeadEndDate(): string {
+  return isoDateLocal(new Date());
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 function taskStatusLabel(raw: string): string {
   switch (raw) {
     case "queued":
@@ -63,6 +85,9 @@ export function TaskCenterPage() {
   const [collectMode, setCollectMode] = useState<"single_account" | "enterprise_all_accounts">("single_account");
   const [bizVideoListMode, setBizVideoListMode] = useState<"full" | "recent_72h">("full");
   const [limitN, setLimitN] = useState("20");
+  const [startDate, setStartDate] = useState(defaultLeadStartDate());
+  const [endDate, setEndDate] = useState(defaultLeadEndDate());
+  const [pageSize, setPageSize] = useState("20");
   const [taskStatus, setTaskStatus] = useState("");
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -110,6 +135,9 @@ export function TaskCenterPage() {
     setCollectMode("single_account");
     setBizVideoListMode("full");
     setLimitN("20");
+    setStartDate(defaultLeadStartDate());
+    setEndDate(defaultLeadEndDate());
+    setPageSize("20");
   }, [tenantId]);
 
   useEffect(() => {
@@ -172,6 +200,49 @@ export function TaskCenterPage() {
     }
     return false;
   }, [ruleId, selectedRuleMetaQ.data, selectedRule?.name]);
+  const ruleKind: TaskRuleKind = useMemo(() => {
+    const id = ruleId.trim();
+    if (!id) {
+      return "none";
+    }
+    const detail = selectedRuleMetaQ.data;
+    let metaTarget = "";
+    if (detail && detail.meta && typeof detail.meta === "object" && !Array.isArray(detail.meta)) {
+      const meta = detail.meta as Record<string, unknown>;
+      if (typeof meta.target === "string") {
+        metaTarget = meta.target.trim();
+      }
+      if (!metaTarget) {
+        const bundle = meta.bundle;
+        if (bundle && typeof bundle === "object" && !Array.isArray(bundle)) {
+          const bundleTarget = (bundle as Record<string, unknown>).target;
+          if (typeof bundleTarget === "string") {
+            metaTarget = bundleTarget.trim();
+          }
+        }
+      }
+    }
+    if (metaTarget === "biz_video") {
+      return "video";
+    }
+    if (metaTarget === "employee_personal_auth") {
+      return "employee_auth";
+    }
+    if (metaTarget === "lead_source_daily_agg" || metaTarget === "biz_lead") {
+      return "lead";
+    }
+    if (isDouyinLatestVideoRule) {
+      return "video";
+    }
+    const name = (selectedRule?.name ?? "").trim();
+    if (id.includes("employee-personal-auth") || name.includes("授权")) {
+      return "employee_auth";
+    }
+    if (id.includes("high-dive") || id.includes("high-potential") || name.includes("线索")) {
+      return "lead";
+    }
+    return "generic";
+  }, [ruleId, selectedRuleMetaQ.data, isDouyinLatestVideoRule, selectedRule?.name]);
   const prevRuleKindRef = useRef<"douyin" | "other" | null>(null);
 
   useEffect(() => {
@@ -223,6 +294,14 @@ export function TaskCenterPage() {
     }
     prevRuleKindRef.current = currentKind;
   }, [ruleId, isDouyinLatestVideoRule, limitN, selectedRuleMetaQ.isPending, selectedRuleMetaQ.data]);
+  /** 切换规则时把规则专属参数复位为默认值，避免上一条规则的残留值被带入提交。 */
+  useEffect(() => {
+    setStartDate(defaultLeadStartDate());
+    setEndDate(defaultLeadEndDate());
+    setPageSize("20");
+    setCollectMode("single_account");
+    setBizVideoListMode("full");
+  }, [ruleId]);
 
   const runsQ = useQuery({
     queryKey: ["task-runs", tenantId, selectedDyLeadsEnterpriseId ?? null, runPage],
@@ -280,23 +359,48 @@ export function TaskCenterPage() {
       const eligibleAccounts = (accountsQ.data ?? [])
         .map((a) => normalizeBizAccountIdField(a.account_id))
         .filter((x) => x.length > 0);
-      if (collectMode === "single_account" && !accountId) {
-        throw new Error("单账号模式需选择业务账号");
+      /** lead / employee_auth 规则没有「全账号」语义，固定按单账号锚点提交。 */
+      const effectiveCollectMode: "single_account" | "enterprise_all_accounts" =
+        ruleKind === "video" || ruleKind === "generic" ? collectMode : "single_account";
+      if (effectiveCollectMode === "single_account" && !accountId) {
+        throw new Error("请选择业务账号");
       }
-      if (collectMode === "enterprise_all_accounts" && eligibleAccounts.length === 0) {
+      if (effectiveCollectMode === "enterprise_all_accounts" && eligibleAccounts.length === 0) {
         throw new Error("当前主体下无可用账号可采集");
       }
       const n = Number(limitN);
-      const limitMax = isDouyinLatestVideoRule ? 10000 : 100;
-      if (!Number.isFinite(n) || n < 1 || n > limitMax) {
-        throw new Error(isDouyinLatestVideoRule ? "最大入库条数需为 1-10000" : "固定数量需为 1-100");
+      if (ruleKind !== "employee_auth") {
+        const limitMax = ruleKind === "video" ? 10000 : 100;
+        if (!Number.isFinite(n) || n < 1 || n > limitMax) {
+          throw new Error(ruleKind === "video" ? "最大入库条数需为 1-10000" : "最大入库条数需为 1-100");
+        }
       }
-      const finalAccountId = collectMode === "single_account" ? accountId : (accountId || eligibleAccounts[0] || "");
+      const pageSizeN = Number(pageSize);
+      if (ruleKind === "employee_auth" && (!Number.isFinite(pageSizeN) || pageSizeN < 1 || pageSizeN > 200)) {
+        throw new Error("每页条数需为 1-200");
+      }
+      const leadStart = startDate.trim();
+      const leadEnd = endDate.trim();
+      if (ruleKind === "lead") {
+        if ((leadStart.length > 0) !== (leadEnd.length > 0)) {
+          throw new Error("开始日期与结束日期需同时填写，或同时留空走规则默认参数");
+        }
+        if (leadStart && leadEnd) {
+          if (!ISO_DATE_RE.test(leadStart) || !ISO_DATE_RE.test(leadEnd)) {
+            throw new Error("日期格式需为 YYYY-MM-DD");
+          }
+          if (leadStart > leadEnd) {
+            throw new Error("开始日期不能晚于结束日期");
+          }
+        }
+      }
+      const finalAccountId =
+        effectiveCollectMode === "single_account" ? accountId : (accountId || eligibleAccounts[0] || "");
       if (!finalAccountId) {
         throw new Error("全账号模式需至少选择一个可用账号作为任务锚点");
       }
       const selectedStaff =
-        collectMode === "single_account"
+        effectiveCollectMode === "single_account"
           ? (accountsQ.data ?? []).find((a) => sameBizAccountId(a.account_id, finalAccountId))
           : undefined;
       const dyHomepageFromAccount =
@@ -307,26 +411,43 @@ export function TaskCenterPage() {
           : null;
       if (
         isDouyinLatestVideoRule &&
-        collectMode === "single_account" &&
+        effectiveCollectMode === "single_account" &&
         !dyHomepageFromAccount
       ) {
         throw new Error(
           "所选业务账号未维护抖音主页链接。请先在「员工账号管理」补全该账号的主页 URL，或先执行一次「员工个人号授权同步」后再创建任务。",
         );
       }
+      /** params 按规则形态裁剪：employee_auth 只带 page_size；lead 附日期区间；video/generic 保持账号范围语义。 */
+      const params: Record<string, unknown> =
+        ruleKind === "employee_auth"
+          ? {
+              account_id: finalAccountId,
+              dy_leads_enterprise_id: enterpriseId.trim(),
+              page_size: Math.trunc(pageSizeN),
+            }
+          : ruleKind === "lead"
+            ? {
+                mode: "single_account",
+                limit_n: Math.trunc(n),
+                account_id: finalAccountId,
+                dy_leads_enterprise_id: enterpriseId.trim(),
+                ...(leadStart && leadEnd ? { start_date: leadStart, end_date: leadEnd } : {}),
+              }
+            : {
+                mode: effectiveCollectMode,
+                limit_n: Math.trunc(n),
+                ...(isDouyinLatestVideoRule
+                  ? { biz_video_list_mode: bizVideoListMode, biz_video_recent_hours: 72 }
+                  : {}),
+                ...(effectiveCollectMode === "single_account" ? { account_id: finalAccountId } : {}),
+                ...(effectiveCollectMode === "enterprise_all_accounts" ? { account_ids: eligibleAccounts } : {}),
+                dy_leads_enterprise_id: enterpriseId.trim(),
+                ...(dyHomepageFromAccount ? { dy_homepage_url: dyHomepageFromAccount } : {}),
+              };
       const payload: Record<string, unknown> = {
         ...(browserProfileSlug.trim() ? { browser_profile_slug: browserProfileSlug.trim() } : {}),
-        params: {
-          mode: collectMode,
-          limit_n: Math.trunc(n),
-          ...(isDouyinLatestVideoRule
-            ? { biz_video_list_mode: bizVideoListMode, biz_video_recent_hours: 72 }
-            : {}),
-          ...(collectMode === "single_account" ? { account_id: finalAccountId } : {}),
-          ...(collectMode === "enterprise_all_accounts" ? { account_ids: eligibleAccounts } : {}),
-          dy_leads_enterprise_id: enterpriseId.trim(),
-          ...(dyHomepageFromAccount ? { dy_homepage_url: dyHomepageFromAccount } : {}),
-        },
+        params,
       };
       const selectedEnterprise = (enterprisesQ.data?.enterprises ?? []).find((item) =>
         sameDyLeadsEnterpriseId(item.dy_leads_enterprise_id, enterpriseId.trim()),
@@ -354,6 +475,9 @@ export function TaskCenterPage() {
       setCollectMode("single_account");
       setBizVideoListMode("full");
       setLimitN("20");
+      setStartDate(defaultLeadStartDate());
+      setEndDate(defaultLeadEndDate());
+      setPageSize("20");
       setCreateModalOpen(false);
       setBanner({ kind: "ok", text: summary });
       await qc.invalidateQueries({ queryKey: ["tasks", tenantId] });
@@ -529,8 +653,10 @@ export function TaskCenterPage() {
                         ? "请选择同步规则"
                         : !deviceId
                           ? "请选择设备"
-                          : collectMode === "single_account" && !accountId
-                            ? "单账号模式需选择业务账号"
+                          : ((ruleKind === "video" || ruleKind === "generic" ? collectMode : "single_account") ===
+                                "single_account" &&
+                              !accountId)
+                            ? "请选择业务账号"
                             : null;
 
   return (
@@ -563,7 +689,11 @@ export function TaskCenterPage() {
                 setRuleId("");
                 setBrowserProfileSlug("");
                 setCollectMode("single_account");
+                setBizVideoListMode("full");
                 setLimitN("20");
+                setStartDate(defaultLeadStartDate());
+                setEndDate(defaultLeadEndDate());
+                setPageSize("20");
                 setCreateModalOpen(true);
               }}
             >
@@ -638,74 +768,6 @@ export function TaskCenterPage() {
                   </SelectInput>
                 )}
               </Field>
-              <Field label="业务账号">
-                {({ id }) => (
-                  <SelectInput
-                    id={id}
-                    value={accountId}
-                    onChange={(ev) => setAccountId(ev.target.value)}
-                    disabled={!enterpriseId || accountsQ.isPending || accountsQ.isError}
-                  >
-                    <option value="">
-                      {!enterpriseId
-                        ? "请先选择主体"
-                        : accountsQ.isPending
-                          ? "加载账号中…"
-                          : accountsQ.isError
-                            ? "账号加载失败"
-                            : (accountsQ.data ?? []).length === 0
-                              ? "当前主体下暂无可用账号"
-                              : "请选择"}
-                    </option>
-                    {(accountsQ.data ?? []).map((a) => (
-                      <option key={a.account_id} value={a.account_id}>
-                        {a.dy_nickname ?? a.account_id}
-                      </option>
-                    ))}
-                  </SelectInput>
-                )}
-              </Field>
-              <Field label="账号范围">
-                {({ id }) => (
-                  <SelectInput
-                    id={id}
-                    value={collectMode}
-                    onChange={(ev) =>
-                      setCollectMode(
-                        ev.target.value === "enterprise_all_accounts" ? "enterprise_all_accounts" : "single_account",
-                      )
-                    }
-                  >
-                    <option value="single_account">单账号</option>
-                    <option value="enterprise_all_accounts">当前主体全部可用账号</option>
-                  </SelectInput>
-                )}
-              </Field>
-              <Field label="视频范围">
-                {({ id }) => (
-                  <SelectInput
-                    id={id}
-                    value={bizVideoListMode}
-                    onChange={(ev) => setBizVideoListMode(ev.target.value === "full" ? "full" : "recent_72h")}
-                    disabled={!isDouyinLatestVideoRule}
-                  >
-                    <option value="full">全部视频（抓到即入库，已存在自动更新）</option>
-                    <option value="recent_72h">最新视频（仅发布日期最近三天）</option>
-                  </SelectInput>
-                )}
-              </Field>
-              <Field label="最大入库条数（每账号）">
-                {({ id }) => (
-                  <TextInput
-                    id={id}
-                    inputMode="numeric"
-                    mono
-                    value={limitN}
-                    onChange={(ev) => setLimitN(ev.target.value.replace(/\D/g, ""))}
-                    placeholder={isDouyinLatestVideoRule ? "1-10000" : "1-100"}
-                  />
-                )}
-              </Field>
               <Field label="同步规则">
                 {({ id }) => (
                   <SelectInput
@@ -734,6 +796,130 @@ export function TaskCenterPage() {
               <p className="text-xs text-zz-muted">
                 仅列出已发布规则（与客户端 Runner 拉取条件一致）；标识可为 slug 或 UUID，入库统一为规则主键 id 供 Runner 拉取。
               </p>
+              {ruleKind === "none" ? (
+                <p className="text-sm text-zz-muted">请先选择同步规则，再填写该规则需要的任务参数。</p>
+              ) : (
+                <>
+                  <Field label="业务账号">
+                    {({ id }) => (
+                      <SelectInput
+                        id={id}
+                        value={accountId}
+                        onChange={(ev) => setAccountId(ev.target.value)}
+                        disabled={!enterpriseId || accountsQ.isPending || accountsQ.isError}
+                      >
+                        <option value="">
+                          {!enterpriseId
+                            ? "请先选择主体"
+                            : accountsQ.isPending
+                              ? "加载账号中…"
+                              : accountsQ.isError
+                                ? "账号加载失败"
+                                : (accountsQ.data ?? []).length === 0
+                                  ? "当前主体下暂无可用账号"
+                                  : "请选择"}
+                        </option>
+                        {(accountsQ.data ?? []).map((a) => (
+                          <option key={a.account_id} value={a.account_id}>
+                            {a.dy_nickname ?? a.account_id}
+                          </option>
+                        ))}
+                      </SelectInput>
+                    )}
+                  </Field>
+                  {ruleKind === "video" || ruleKind === "generic" ? (
+                    <Field label="账号范围">
+                      {({ id }) => (
+                        <SelectInput
+                          id={id}
+                          value={collectMode}
+                          onChange={(ev) =>
+                            setCollectMode(
+                              ev.target.value === "enterprise_all_accounts"
+                                ? "enterprise_all_accounts"
+                                : "single_account",
+                            )
+                          }
+                        >
+                          <option value="single_account">单账号</option>
+                          <option value="enterprise_all_accounts">当前主体全部可用账号</option>
+                        </SelectInput>
+                      )}
+                    </Field>
+                  ) : null}
+                  {ruleKind === "video" ? (
+                    <Field label="视频范围">
+                      {({ id }) => (
+                        <SelectInput
+                          id={id}
+                          value={bizVideoListMode}
+                          onChange={(ev) => setBizVideoListMode(ev.target.value === "full" ? "full" : "recent_72h")}
+                        >
+                          <option value="full">全部视频（抓到即入库，已存在自动更新）</option>
+                          <option value="recent_72h">最新视频（仅发布日期最近三天）</option>
+                        </SelectInput>
+                      )}
+                    </Field>
+                  ) : null}
+                  {ruleKind === "lead" ? (
+                    <>
+                      <Field label="开始日期">
+                        {({ id }) => (
+                          <TextInput
+                            id={id}
+                            type="date"
+                            mono
+                            value={startDate}
+                            onChange={(ev) => setStartDate(ev.target.value)}
+                          />
+                        )}
+                      </Field>
+                      <Field label="结束日期">
+                        {({ id }) => (
+                          <TextInput
+                            id={id}
+                            type="date"
+                            mono
+                            value={endDate}
+                            onChange={(ev) => setEndDate(ev.target.value)}
+                          />
+                        )}
+                      </Field>
+                      <p className="text-xs text-zz-muted">
+                        按最近互动时间筛选的日期区间；两者同时留空时按规则默认参数执行。
+                      </p>
+                    </>
+                  ) : null}
+                  {ruleKind !== "employee_auth" ? (
+                    <Field label="最大入库条数（每账号）">
+                      {({ id }) => (
+                        <TextInput
+                          id={id}
+                          inputMode="numeric"
+                          mono
+                          value={limitN}
+                          onChange={(ev) => setLimitN(ev.target.value.replace(/\D/g, ""))}
+                          placeholder={ruleKind === "video" ? "1-10000" : "1-100"}
+                        />
+                      )}
+                    </Field>
+                  ) : null}
+                  {ruleKind === "employee_auth" ? (
+                    <Field label="每页条数">
+                      {({ id }) => (
+                        <TextInput
+                          id={id}
+                          inputMode="numeric"
+                          mono
+                          value={pageSize}
+                          onChange={(ev) => setPageSize(ev.target.value.replace(/\D/g, ""))}
+                          placeholder="1-200"
+                        />
+                      )}
+                    </Field>
+                  ) : null}
+                </>
+              )}
               <Field label="Playwright 客户端配置（可选）">
                 {({ id }) => (
                   <SelectInput

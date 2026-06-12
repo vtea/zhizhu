@@ -3,7 +3,13 @@ FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-RUN apt-get update \
+# 可选镜像源（构建主机访问 deb.debian.org / registry.npmjs.org 缓慢或不可达时，
+# 在 .env 配置 DEBIAN_MIRROR / NPM_REGISTRY / ALPINE_MIRROR，由 docker-compose.yml 注入；默认留空走官方源）
+ARG DEBIAN_MIRROR=
+ARG NPM_REGISTRY=
+
+RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources; fi \
+  && apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
@@ -17,12 +23,26 @@ ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_CONSOLE_PUBLIC_REGISTER=$VITE_CONSOLE_PUBLIC_REGISTER
 
 # 仅安装 @zhizhu/web 依赖树，不安装 client/runner/e2e 等 workspace
-RUN npm ci -w @zhizhu/web --include-workspace-root \
+# 注意：Windows 上更新 package-lock.json 会丢失其他平台的 rollup 原生 optional 包（npm/cli#4828），
+# 导致 Linux 构建报 "Cannot find module '@rollup/rollup-linux-x64-gnu'"。
+# 此处用 npm pack 直接取 tarball 解压补装（不可用 npm install --no-save：会对全部 workspace 重新 reify，
+# 进而拉取 apps/client 的 electron 二进制等无关依赖）。
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY" --location=global; fi \
+  && npm ci -w @zhizhu/web --include-workspace-root \
+  && ROLLUP_VER="$(node -p "require(require.resolve('rollup/package.json',{paths:['/app/apps/web']})).version")" \
+  && (node -e "require('@rollup/rollup-linux-x64-gnu')" >/dev/null 2>&1 \
+      || (cd /tmp \
+          && npm pack "@rollup/rollup-linux-x64-gnu@${ROLLUP_VER}" --silent \
+          && mkdir -p /app/node_modules/@rollup/rollup-linux-x64-gnu \
+          && tar -xzf rollup-rollup-linux-x64-gnu-*.tgz -C /app/node_modules/@rollup/rollup-linux-x64-gnu --strip-components=1 \
+          && rm -f rollup-rollup-linux-x64-gnu-*.tgz)) \
   && npm run build -w @zhizhu/web
 
 FROM nginx:1.27-alpine
+ARG ALPINE_MIRROR=
 # 显式安装 curl 供 compose healthcheck 使用（不依赖 busybox wget applet 是否存在）
-RUN apk add --no-cache curl
+RUN if [ -n "$ALPINE_MIRROR" ]; then sed -i "s|dl-cdn.alpinelinux.org|$ALPINE_MIRROR|g" /etc/apk/repositories; fi \
+  && apk add --no-cache curl
 COPY deploy/nginx.web.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 80

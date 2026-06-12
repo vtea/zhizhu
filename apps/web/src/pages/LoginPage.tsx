@@ -12,7 +12,7 @@ import {
   resolvePathAfterSessionEstablished,
 } from "@/lib/postLoginNavigation";
 import { formatAuthFormError } from "@/lib/queryError";
-import { ApiError, apiPostJson } from "@/api/http";
+import { apiPostJson } from "@/api/http";
 import type { SessionPayload } from "@/auth/session";
 import { useQueryClient } from "@tanstack/react-query";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -22,12 +22,6 @@ const DEMO_TENANT = "demo";
 
 /** 须与 API 的 CONSOLE_ALLOW_PUBLIC_REGISTER 一致；未开启时不展示注册入口 */
 const PUBLIC_REGISTER = import.meta.env.VITE_CONSOLE_PUBLIC_REGISTER === "true";
-
-/** 与 `npm run migrate:api` 种子及 README 一致 */
-const SEED_LOGIN_HINT =
-  "租户管理员：租户 demo，用户名 admin 或邮箱 admin@cn2.ltd，密码 A123456。" +
-  " 平台管理员：租户 zhizhuplatform，用户名 platform-admin 或邮箱 platform-admin@local.zhizhu，密码 A123456。" +
-  " 本地：根目录 .env 配 DATABASE_URL 与 JWT_SECRET 后执行 npm run migrate:api（含 027 登录用户名列）；平台账号问题可再跑一次 migrate。";
 
 type LocState = { registeredTenant?: string; registeredEmail?: string; registeredLogin?: string } | null;
 
@@ -173,51 +167,10 @@ export function LoginPage() {
     }
   }
 
-  async function demoEnterOnlyTenant() {
-    setErr(null);
-    const id = (tenant.trim() || DEMO_TENANT).toLowerCase();
-    let accessToken: string | undefined;
-    if (base) {
-      setBusy(true);
-      try {
-        const tok = await apiPostJson<{ access_token?: string | null; note?: string }>(
-          "/api/v1/auth/token",
-          { tenant_id: id },
-          { skipAuth: true },
-        );
-        if (typeof tok.access_token === "string" && tok.access_token.length > 0) {
-          accessToken = tok.access_token;
-        }
-      } catch (ex) {
-        setErr(
-          ex instanceof ApiError || ex instanceof Error
-            ? formatAuthFormError(ex, "登录失败")
-            : "换取令牌失败（若已配置 JWT_SECRET，请用用户名/邮箱密码登录或开启 CONSOLE_ALLOW_DEV_TENANT_TOKEN）",
-        );
-        setBusy(false);
-        return;
-      }
-      setBusy(false);
-    }
-    const newSession: SessionPayload = { tenantId: id, displayName: "演示用户", accessToken };
-    queryClient.clear();
-    setSession(newSession);
-    clearPostRegisterHint();
-    void navigate(resolvePathAfterSessionEstablished(location.state, newSession), { replace: true });
-  }
-
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-zz-snow px-4">
       <div className="w-full max-w-md rounded-[var(--radius-signature)] border border-zz-card-border bg-zz-white px-8 py-10 shadow-none">
         <h1 className="font-display text-center text-3xl font-normal text-zz-black">知竹</h1>
-        <p className="mt-2 text-center text-sm text-zz-muted">
-          Web 控制台 · 会话在 sessionStorage；配置 API 且设置 JWT_SECRET 时须凭租户 + 用户名或邮箱登录以绑定主体。
-        </p>
-        {base ? (
-          <p className="mt-3 rounded-lg border border-zz-border-light bg-zz-snow/80 px-3 py-2 text-xs leading-relaxed text-zz-near">
-            {SEED_LOGIN_HINT}
-          </p>
-        ) : null}
         <form className="mt-8 space-y-4" onSubmit={(ev) => void loginWithPassword(ev)}>
           <label className="block text-sm text-zz-near">
             租户 ID
@@ -236,7 +189,6 @@ export function LoginPage() {
               className="mt-1 w-full rounded-lg border border-zz-border px-3 py-2 text-sm outline-none focus:border-zz-focus"
               value={loginId}
               onChange={(ev) => setLoginId(ev.target.value)}
-              placeholder="例如 admin 或 admin@cn2.ltd"
               autoComplete="username"
             />
           </label>
@@ -266,23 +218,6 @@ export function LoginPage() {
             </Link>
           </p>
         ) : null}
-        <div className="mt-6 border-t border-zz-border-light pt-6">
-          <p className="text-xs leading-relaxed text-zz-muted">
-            演示：可不填用户名/邮箱密码，仅用租户 ID{" "}
-            <button
-              type="button"
-              className="text-zz-blue underline disabled:opacity-50"
-              disabled={busy}
-              onClick={() => void demoEnterOnlyTenant()}
-            >
-              进入控制台
-            </button>
-            （无 API 时直接进；有 API 且强鉴权时需服务端允许开发换票或改用上方登录）。
-          </p>
-          <p className="mt-2 text-xs text-zz-muted">
-            URL 路径 <span className="font-mono">/t/:tenantId</span> 须与会话租户一致（立项 §6.1）；平台管理员登录后可切换任意租户。
-          </p>
-        </div>
       </div>
     </div>
   );

@@ -47,6 +47,10 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.api
+      args:
+        # 可选国内镜像源（官方源不可达时在 .env 配置，例如 mirrors.aliyun.com / https://registry.npmmirror.com）
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
     image: vtea/zzapi
     restart: unless-stopped
     env_file:
@@ -89,6 +93,9 @@ services:
       args:
         VITE_API_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost:8080}
         VITE_CONSOLE_PUBLIC_REGISTER: ${VITE_CONSOLE_PUBLIC_REGISTER:-false}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
     image: vtea/zzweb
     restart: unless-stopped
     ports:

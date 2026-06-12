@@ -4,15 +4,19 @@ import type { IncomingMessage } from "node:http";
 const HMAC = "sha256";
 
 /** 保留租户：仅存放 `platform_admin` 控制台账号，不承载业务数据（小写字母，避免下划线等易混淆字符） */
-export const RESERVED_PLATFORM_TENANT_ID = "zhizhuplatform";
+export const RESERVED_PLATFORM_TENANT_ID = "vtea";
 /** 历史上控制台曾用该 tenant_id；迁移后统一为 `RESERVED_PLATFORM_TENANT_ID` */
 export const LEGACY_PLATFORM_TENANT_ID = "__platform__";
+/** 2026-06 平台保留租户由 zhizhuplatform 更名为 vtea（062 迁移）；存量 JWT / 未迁移库兼容 */
+export const LEGACY_PLATFORM_TENANT_ID_RENAMED = "zhizhuplatform";
+/** 全部历史平台保留 slug（均为小写） */
+export const LEGACY_PLATFORM_TENANT_IDS = [LEGACY_PLATFORM_TENANT_ID, LEGACY_PLATFORM_TENANT_ID_RENAMED];
 export const PLATFORM_ADMIN_ROLE = "platform_admin";
 
 /** 是否平台保留租户（JWT `tid`）；与 `consoleAuth` / 迁移逻辑一致 */
 export function isPlatformTenantSlug(raw: string): boolean {
   const t = raw.trim().toLowerCase();
-  return t === RESERVED_PLATFORM_TENANT_ID || t === LEGACY_PLATFORM_TENANT_ID.toLowerCase();
+  return t === RESERVED_PLATFORM_TENANT_ID || LEGACY_PLATFORM_TENANT_IDS.includes(t);
 }
 
 /**

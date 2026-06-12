@@ -22,6 +22,8 @@
     "build:client": "npm run build -w @zhizhu/playwright-shell-contract && npm run build -w @zhizhu/playwright-browser-fingerprint && npm run build -w @zhizhu/playwright-rule-schema && npm run build -w @zhizhu/biz-account-auth-status && npm run build -w @zhizhu/runner && npm run build -w @zhizhu/client",
     "dist:client:mac": "npm run pack:mac -w @zhizhu/client",
     "dist:client:win": "npm run pack:win -w @zhizhu/client",
+    "dist:client:mac:dy": "npm run pack:mac:dy -w @zhizhu/client",
+    "dist:client:win:dy": "npm run pack:win:dy -w @zhizhu/client",
     "build:api": "npm run build -w @zhizhu/playwright-shell-contract && npm run build -w @zhizhu/playwright-rule-schema && npm run build -w @zhizhu/biz-account-auth-status && npm run build -w @zhizhu/api",
     "build": "npm run build:web && npm run build:client && npm run build:api",
     "test:api": "npm run test -w @zhizhu/api",
