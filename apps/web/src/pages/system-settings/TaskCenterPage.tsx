@@ -299,9 +299,17 @@ export function TaskCenterPage() {
     setStartDate(defaultLeadStartDate());
     setEndDate(defaultLeadEndDate());
     setPageSize("20");
-    setCollectMode("single_account");
     setBizVideoListMode("full");
   }, [ruleId]);
+  /** 规则形态确定后再设默认账号范围：视频规则默认按主体全部账号同步，无需先选业务账号。 */
+  const prevFormKindRef = useRef<TaskRuleKind | null>(null);
+  useEffect(() => {
+    if (prevFormKindRef.current === ruleKind) {
+      return;
+    }
+    prevFormKindRef.current = ruleKind;
+    setCollectMode(ruleKind === "video" ? "enterprise_all_accounts" : "single_account");
+  }, [ruleKind]);
 
   const runsQ = useQuery({
     queryKey: ["task-runs", tenantId, selectedDyLeadsEnterpriseId ?? null, runPage],
@@ -359,14 +367,16 @@ export function TaskCenterPage() {
       const eligibleAccounts = (accountsQ.data ?? [])
         .map((a) => normalizeBizAccountIdField(a.account_id))
         .filter((x) => x.length > 0);
-      /** lead / employee_auth 规则没有「全账号」语义，固定按单账号锚点提交。 */
+      /** lead / employee_auth 规则按主体同步，固定单账号锚点（自动取主体下第一个可用账号，不需用户选择）。 */
       const effectiveCollectMode: "single_account" | "enterprise_all_accounts" =
         ruleKind === "video" || ruleKind === "generic" ? collectMode : "single_account";
-      if (effectiveCollectMode === "single_account" && !accountId) {
+      const requiresExplicitAccount =
+        (ruleKind === "video" || ruleKind === "generic") && effectiveCollectMode === "single_account";
+      if (requiresExplicitAccount && !accountId) {
         throw new Error("请选择业务账号");
       }
-      if (effectiveCollectMode === "enterprise_all_accounts" && eligibleAccounts.length === 0) {
-        throw new Error("当前主体下无可用账号可采集");
+      if (!requiresExplicitAccount && eligibleAccounts.length === 0) {
+        throw new Error("当前主体下暂无可用账号（任务需至少一个账号作为锚点），请先在员工账号管理添加");
       }
       const n = Number(limitN);
       if (ruleKind !== "employee_auth") {
@@ -394,13 +404,12 @@ export function TaskCenterPage() {
           }
         }
       }
-      const finalAccountId =
-        effectiveCollectMode === "single_account" ? accountId : (accountId || eligibleAccounts[0] || "");
+      const finalAccountId = requiresExplicitAccount ? accountId : (accountId || eligibleAccounts[0] || "");
       if (!finalAccountId) {
-        throw new Error("全账号模式需至少选择一个可用账号作为任务锚点");
+        throw new Error("当前主体下无可用账号作为任务锚点");
       }
       const selectedStaff =
-        effectiveCollectMode === "single_account"
+        requiresExplicitAccount
           ? (accountsQ.data ?? []).find((a) => sameBizAccountId(a.account_id, finalAccountId))
           : undefined;
       const dyHomepageFromAccount =
@@ -464,7 +473,9 @@ export function TaskCenterPage() {
         { dyLeadsEnterpriseId: selectedDyLeadsEnterpriseId ?? null },
       ).then((out) => ({
         out,
-        summary: `任务已加入队列：主体「${selectedEnterprise?.display_name ?? enterpriseId.trim()}」，账号「${finalAccountId}」，规则「${selectedRule?.name ?? ruleId.trim()}」。`,
+        summary: requiresExplicitAccount
+          ? `任务已加入队列：主体「${selectedEnterprise?.display_name ?? enterpriseId.trim()}」，账号「${finalAccountId}」，规则「${selectedRule?.name ?? ruleId.trim()}」。`
+          : `任务已加入队列：主体「${selectedEnterprise?.display_name ?? enterpriseId.trim()}」，规则「${selectedRule?.name ?? ruleId.trim()}」。`,
       }));
     },
     onSuccess: async ({ summary }) => {
@@ -653,8 +664,8 @@ export function TaskCenterPage() {
                         ? "请选择同步规则"
                         : !deviceId
                           ? "请选择设备"
-                          : ((ruleKind === "video" || ruleKind === "generic" ? collectMode : "single_account") ===
-                                "single_account" &&
+                          : ((ruleKind === "video" || ruleKind === "generic") &&
+                              collectMode === "single_account" &&
                               !accountId)
                             ? "请选择业务账号"
                             : null;
@@ -800,33 +811,6 @@ export function TaskCenterPage() {
                 <p className="text-sm text-zz-muted">请先选择同步规则，再填写该规则需要的任务参数。</p>
               ) : (
                 <>
-                  <Field label="业务账号">
-                    {({ id }) => (
-                      <SelectInput
-                        id={id}
-                        value={accountId}
-                        onChange={(ev) => setAccountId(ev.target.value)}
-                        disabled={!enterpriseId || accountsQ.isPending || accountsQ.isError}
-                      >
-                        <option value="">
-                          {!enterpriseId
-                            ? "请先选择主体"
-                            : accountsQ.isPending
-                              ? "加载账号中…"
-                              : accountsQ.isError
-                                ? "账号加载失败"
-                                : (accountsQ.data ?? []).length === 0
-                                  ? "当前主体下暂无可用账号"
-                                  : "请选择"}
-                        </option>
-                        {(accountsQ.data ?? []).map((a) => (
-                          <option key={a.account_id} value={a.account_id}>
-                            {a.dy_nickname ?? a.account_id}
-                          </option>
-                        ))}
-                      </SelectInput>
-                    )}
-                  </Field>
                   {ruleKind === "video" || ruleKind === "generic" ? (
                     <Field label="账号范围">
                       {({ id }) => (
@@ -841,8 +825,39 @@ export function TaskCenterPage() {
                             )
                           }
                         >
-                          <option value="single_account">单账号</option>
                           <option value="enterprise_all_accounts">当前主体全部可用账号</option>
+                          <option value="single_account">单账号</option>
+                        </SelectInput>
+                      )}
+                    </Field>
+                  ) : (
+                    <p className="text-xs text-zz-muted">该规则按当前主体同步，无需选择业务账号。</p>
+                  )}
+                  {(ruleKind === "video" || ruleKind === "generic") && collectMode === "single_account" ? (
+                    <Field label="业务账号">
+                      {({ id }) => (
+                        <SelectInput
+                          id={id}
+                          value={accountId}
+                          onChange={(ev) => setAccountId(ev.target.value)}
+                          disabled={!enterpriseId || accountsQ.isPending || accountsQ.isError}
+                        >
+                          <option value="">
+                            {!enterpriseId
+                              ? "请先选择主体"
+                              : accountsQ.isPending
+                                ? "加载账号中…"
+                                : accountsQ.isError
+                                  ? "账号加载失败"
+                                  : (accountsQ.data ?? []).length === 0
+                                    ? "当前主体下暂无可用账号"
+                                    : "请选择"}
+                          </option>
+                          {(accountsQ.data ?? []).map((a) => (
+                            <option key={a.account_id} value={a.account_id}>
+                              {a.dy_nickname ?? a.account_id}
+                            </option>
+                          ))}
                         </SelectInput>
                       )}
                     </Field>
