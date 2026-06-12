@@ -20,7 +20,7 @@
     "postinstall": "node -e \"const cp=require('node:child_process');const hasTsc=(()=>{try{return !!require.resolve('typescript/bin/tsc')}catch{return false}})();if(!hasTsc){console.log('[biz-account-auth-status] skip build: typescript not installed');process.exit(0);}cp.execSync('npm run build',{stdio:'inherit'});\""
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.9.3",
     "tsx": "^4.19.2",
     "typescript": "~5.8.0"
   }
