@@ -67,7 +67,7 @@
           { "kind": "css", "value": "div[data-log-module='高潜用户列表'] [data-log-name='未留资']" }
         ]
       },
-      "timeout_ms": 30000
+      "timeout_ms": 60000
     },
     {
       "type": "setDateRange",

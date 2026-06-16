@@ -5,10 +5,13 @@ import { promisify } from "node:util";
 import { app, dialog, shell, type BrowserWindow } from "electron";
 import type { RunnerSmokeTestResultDto } from "./sharedTypes";
 import {
+  cacheRunnerNodeExecutable,
   describePlaywrightChromiumDiagnostic,
   ensurePlaywrightChromiumReady,
   invokeRunnerSmokeTest,
+  listRunnerNodeCandidates,
   needsPlaywrightChromiumInstall,
+  packagedNodeExecutablePath,
   resolvePlaywrightCliJs,
   resolveRunnerCliJs,
   resolvedPlaywrightNpmVersion,
@@ -84,24 +87,27 @@ export async function probeNodeRuntime(): Promise<{
   versionLine?: string;
   usedPath: string | null;
   tried: string[];
+  bundled: boolean;
 }> {
-  const raw = typeof process.env.ZHIZHU_NODE === "string" ? process.env.ZHIZHU_NODE.trim() : "";
-  const uniq: string[] = [];
-  if (raw.length > 0) {
-    uniq.push(raw);
-  }
-  uniq.push("node");
-  const tried = [...uniq];
+  const tried = listRunnerNodeCandidates();
   for (const cmd of tried) {
     try {
       const { stdout } = await execFileAsync(cmd, ["-v"], { timeout: 5000 });
       const line = stdout.trim().split(/\r?\n/)[0]?.trim();
-      return { ok: true, versionLine: line ?? "unknown", usedPath: cmd, tried };
+      const bundledPath = packagedNodeExecutablePath();
+      cacheRunnerNodeExecutable(cmd);
+      return {
+        ok: true,
+        versionLine: line ?? "unknown",
+        usedPath: cmd,
+        tried,
+        bundled: bundledPath != null && cmd === bundledPath,
+      };
     } catch {
       /* try next */
     }
   }
-  return { ok: false, usedPath: null, tried };
+  return { ok: false, usedPath: null, tried, bundled: false };
 }
 
 /** 原生 MessageBox「详情」仅用纯文本；用分段与结论句（可用/不可用）便于扫读。 */
@@ -117,15 +123,21 @@ function formatEnvCatalog(props: {
   const blocks: string[] = [];
 
   if (props.node.ok) {
+    const src =
+      props.node.bundled
+        ? "安装包内置 Node"
+        : props.node.usedPath === "node"
+          ? "PATH 中的 node"
+          : "ZHIZHU_NODE 或指定路径";
     blocks.push(
       ...sec(
         "【一 · Node.js】",
         [
-          `说明：Runner 与 Playwright 子进程须使用系统安装的 Node，而非 Electron 内置 Node。`,
+          `说明：Runner 与 Playwright 子进程使用 Node（非 Electron 内置 Node）。`,
           ``,
           `结论：可用`,
           `版本：${props.node.versionLine ?? "—"}`,
-          `调用：${props.node.usedPath ?? "node"}（为 node 时表示使用 PATH）`,
+          `调用：${props.node.usedPath ?? "node"} · ${src}`,
         ],
       ),
     );
@@ -137,7 +149,7 @@ function formatEnvCatalog(props: {
           `结论：不可用`,
           `已尝试：${props.node.tried.join(" · ")}`,
           ``,
-          `请安装 Node.js 并加入 PATH，或设置环境变量 ZHIZHU_NODE 为 node 可执行文件的完整路径。`,
+          `正式安装包应已内置 Node；若仍失败请重新安装客户端，或设置 ZHIZHU_NODE / 在 PATH 安装 Node.js 22+ 后重启。`,
         ],
       ),
     );
@@ -176,52 +188,55 @@ export async function runStartupRunnerEnvironmentDialog(
   if (process.env.ZHIZHU_SKIP_PLAYWRIGHT_AUTO_INSTALL === "1") {
     return;
   }
-  const node = await probeNodeRuntime();
-  const hasPw = resolvePlaywrightCliJs() !== null;
-  const hasRunner = resolveRunnerCliJs() !== null;
-  const pin = resolvedPlaywrightNpmVersion();
-  const chromiumNeeds = needsPlaywrightChromiumInstall();
-  const catalog = formatEnvCatalog({
-    node,
-    hasPlaywrightCli: hasPw,
-    hasRunnerCli: hasRunner,
-    pinnedPw: pin,
-  });
 
-  if (!node.ok) {
-    const r = await showMsg(parent, {
-      type: "warning",
-      title: "知竹 · 运行环境",
-      message: "未检测到 Node.js（Runner / Playwright 子进程无法在纯 Electron 运行时内代替 Node）。",
-      detail: `${catalog}\n\n可在官网获取安装包或使用包管理器安装后重启本客户端。`,
-      buttons: ["打开 Node.js 官网", "我知道了"],
-      defaultId: 0,
-      cancelId: 1,
+  const prep = await ensureRunnerSpawnReady({ parent, onLog, chromium: "none" });
+  if (!prep.ok) {
+    const node = await probeNodeRuntime();
+    const catalog = formatEnvCatalog({
+      node,
+      hasPlaywrightCli: resolvePlaywrightCliJs() !== null,
+      hasRunnerCli: resolveRunnerCliJs() !== null,
+      pinnedPw: resolvedPlaywrightNpmVersion(),
     });
-    if (r.response === 0) {
-      await shell.openExternal("https://nodejs.org/");
+    if (!node.ok) {
+      const r = await showMsg(parent, {
+        type: "warning",
+        title: "知竹 · 运行环境",
+        message: "未检测到可用于 Runner 的 Node.js。",
+        detail: `${catalog}\n\n正式安装包应已内置 Node；亦可自行安装 Node.js 22+ 或设置 ZHIZHU_NODE 后重启。`,
+        buttons: ["打开 Node.js 官网", "我知道了"],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      if (r.response === 0) {
+        await shell.openExternal("https://nodejs.org/");
+      }
+    } else {
+      await showMsg(parent, {
+        type: "error",
+        title: "知竹 · 运行环境",
+        message: "未能解析 Playwright 或 @zhizhu/runner 构建产物。",
+        detail: `${catalog}`,
+        buttons: ["确定"],
+      });
     }
     return;
   }
 
-  if (!hasPw || !hasRunner) {
-    await showMsg(parent, {
-      type: "error",
-      title: "知竹 · 运行环境",
-      message: "未能解析 Playwright 或 @zhizhu/runner 构建产物。",
-      detail: `${catalog}`,
-      buttons: ["确定"],
-    });
-    return;
-  }
-
-  if (!chromiumNeeds) {
+  if (!needsPlaywrightChromiumInstall()) {
     return;
   }
 
   if (readChromiumPromptDeclinedForPinnedVersion()) {
     return;
   }
+
+  const catalog = formatEnvCatalog({
+    node: await probeNodeRuntime(),
+    hasPlaywrightCli: true,
+    hasRunnerCli: true,
+    pinnedPw: resolvedPlaywrightNpmVersion(),
+  });
 
   const r2 = await showMsg(parent, {
     type: "question",
@@ -269,6 +284,48 @@ export async function runnerSmokeWithEnvPrompts(
   logToShell: (line: string) => void,
   parent: BrowserWindow | null,
 ): Promise<RunnerSmokeTestResultDto> {
+  const prep = await ensureRunnerSpawnReady({
+    parent,
+    onLog: logToShell,
+    chromium: "interactive-smoke",
+  });
+  if (!prep.ok) {
+    return {
+      ok: false,
+      exitCode: -1,
+      stdout: "",
+      stderr: prep.error,
+    };
+  }
+
+  const result = await invokeRunnerSmokeTest();
+  return result;
+}
+
+export type RunnerSpawnPrepResult =
+  | { ok: true; chromiumReady?: boolean }
+  | { ok: false; error: string; userNotified?: boolean };
+
+export type EnsureRunnerSpawnReadyOptions = {
+  parent?: BrowserWindow | null;
+  onLog?: (line: string) => void;
+  /**
+   * - none：仅检测 Node 与 CLI，不处理 Chromium（首启向导前半段）
+   * - interactive：缺 Chromium 时弹窗询问是否安装（打开浏览器等）
+   * - interactive-smoke：自检专用（可选「直接烟测」）
+   * - background：后台任务/试跑，缺 Chromium 时静默尝试 install，失败则返回错误
+   */
+  chromium?: "none" | "interactive" | "interactive-smoke" | "background";
+};
+
+/** Runner / Playwright 子进程 spawn 前的统一前置检测（Node、CLI、Chromium）。 */
+export async function ensureRunnerSpawnReady(
+  opts: EnsureRunnerSpawnReadyOptions = {},
+): Promise<RunnerSpawnPrepResult> {
+  const parent = opts.parent ?? null;
+  const onLog = opts.onLog;
+  const chromiumMode = opts.chromium ?? "background";
+
   const node = await probeNodeRuntime();
   if (!node.ok) {
     const catalog = formatEnvCatalog({
@@ -277,48 +334,127 @@ export async function runnerSmokeWithEnvPrompts(
       hasRunnerCli: resolveRunnerCliJs() !== null,
       pinnedPw: resolvedPlaywrightNpmVersion(),
     });
-    const r = await showMsg(parent, {
-      type: "warning",
-      title: "无法执行 Runner 自检",
-      message: "未检测到 Node.js，无法启动 Playwright 子进程。",
-      detail: catalog,
-      buttons: ["打开 Node.js 官网", "关闭"],
-    });
-    if (r.response === 0) {
-      await shell.openExternal("https://nodejs.org/");
+    if (chromiumMode === "interactive" || chromiumMode === "interactive-smoke") {
+      const r = await showMsg(parent, {
+        type: "warning",
+        title: "Runner 运行环境未就绪",
+        message: "未检测到可用于 Runner 的 Node.js。",
+        detail: `${catalog}\n\n正式安装包应已内置 Node；亦可安装 Node.js 22+ 或设置 ZHIZHU_NODE 后重启客户端。`,
+        buttons: ["打开 Node.js 官网", "关闭"],
+      });
+      if (r.response === 0) {
+        await shell.openExternal("https://nodejs.org/");
+      }
     }
+    return { ok: false, error: "未检测到 Node.js（内置 / PATH / ZHIZHU_NODE）。", userNotified: true };
+  }
+
+  if (!resolveRunnerCliJs()) {
     return {
       ok: false,
-      exitCode: -1,
-      stdout: "",
-      stderr: "未检测到 Node.js（PATH 或 ZHIZHU_NODE）。",
+      error: "未解析到 Runner CLI（@zhizhu/runner/dist/cli.js）。请使用正式安装包或联系管理员重新打包客户端。",
+      userNotified: false,
     };
   }
 
-  if (needsPlaywrightChromiumInstall()) {
+  if (!resolvePlaywrightCliJs()) {
+    return {
+      ok: false,
+      error: "未解析到 Playwright CLI。请使用正式安装包或联系管理员重新打包客户端。",
+      userNotified: false,
+    };
+  }
+
+  if (chromiumMode === "none") {
+    return { ok: true };
+  }
+
+  if (!needsPlaywrightChromiumInstall()) {
+    return { ok: true, chromiumReady: true };
+  }
+
+  if (chromiumMode === "background") {
+    onLog?.("[runner-env] Chromium 未就绪，后台尝试 playwright install chromium …");
+    const pwOk = await ensurePlaywrightChromiumReady(onLog);
+    if (!pwOk) {
+      return {
+        ok: false,
+        error:
+          "Playwright Chromium 未就绪且自动安装失败。请联网后在菜单「Runner Playwright 自检」重试，或查看客户端日志 [playwright-install]。",
+        userNotified: false,
+      };
+    }
+    return { ok: true, chromiumReady: true };
+  }
+
+  const detail = describePlaywrightChromiumDiagnostic().detail;
+  if (chromiumMode === "interactive-smoke") {
     const r2 = await showMsg(parent, {
       type: "question",
       title: "下载 Playwright Chromium",
       message: "尚未完成 Chromium 下载。是否现在自动安装后再执行自检？",
-      detail: "需联网；若选择否，将直接尝试烟测（可能失败）。",
+      detail: `${detail}\n\n选「直接烟测」将跳过安装（可能失败）。`,
       buttons: ["先自动安装", "直接烟测"],
       defaultId: 0,
     });
     if (r2.response === 0) {
       await revealClientLogPanelForPlaywrightInstall(parent);
-      const pwOk = await ensurePlaywrightChromiumReady(logToShell);
+      const pwOk = await ensurePlaywrightChromiumReady(onLog);
       if (!pwOk) {
         await showMsg(parent, {
           type: "error",
           title: "知竹 · Chromium",
           message:
-            "自动安装未完成。请查看已展开的「客户端日志」中带 [runner-setup]、[playwright-install] 的记录；修好后再自检。仍可尝试继续烟测（可能失败）。",
+            "自动安装未完成。请查看「客户端日志」中带 [playwright-install] 的记录；修好后再自检。仍可尝试继续烟测（可能失败）。",
           buttons: ["确定"],
         });
+        return { ok: true, chromiumReady: false };
       }
+      return { ok: true, chromiumReady: true };
     }
+    return { ok: true, chromiumReady: false };
   }
 
-  const result = await invokeRunnerSmokeTest();
-  return result;
+  const r2 = await showMsg(parent, {
+    type: "question",
+    title: "下载 Playwright Chromium",
+    message: "尚未完成 Chromium 下载。是否现在联网自动安装？",
+    detail,
+    buttons: ["立即自动安装", "取消"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (r2.response !== 0) {
+    return { ok: false, error: "已取消：须先完成 Playwright Chromium 下载。", userNotified: true };
+  }
+  await revealClientLogPanelForPlaywrightInstall(parent);
+  const pwOk = await ensurePlaywrightChromiumReady(onLog);
+  if (!pwOk) {
+    await showMsg(parent, {
+      type: "error",
+      title: "知竹 · Chromium",
+      message:
+        "Chromium 自动安装未完成。请查看「客户端日志」中带 [playwright-install] 的记录；或在菜单「Runner Playwright 自检」中重试。",
+      buttons: ["确定"],
+    });
+    return {
+      ok: false,
+      error:
+        "Chromium 自动安装未完成。请查看「客户端日志」中带 [playwright-install] 的记录；或在菜单「Runner Playwright 自检」中重试。",
+      userNotified: true,
+    };
+  }
+  return { ok: true, chromiumReady: true };
+}
+
+export type PlaywrightHeadedPrepResult = RunnerSpawnPrepResult;
+
+/**
+ * 打开可视化 Playwright 浏览器前的环境准备：Node、Runner CLI、Chromium。
+ */
+export async function preparePlaywrightHeadedLaunch(
+  parent: BrowserWindow | null,
+  onLog?: (line: string) => void,
+): Promise<PlaywrightHeadedPrepResult> {
+  return ensureRunnerSpawnReady({ parent, onLog, chromium: "interactive" });
 }

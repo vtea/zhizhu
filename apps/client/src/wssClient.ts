@@ -12,7 +12,6 @@ let pingTimer: ReturnType<typeof setInterval> | null = null;
 let socketPendingReplace: any = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
-const WSS_RECONNECT_MAX = 24;
 const WSS_RECONNECT_BASE_MS = 2000;
 const WSS_RECONNECT_CAP_MS = 120_000;
 
@@ -117,6 +116,12 @@ export function startDeviceWssIfConfigured(app: App): void {
     socket.addEventListener("open", () => {
       reconnectAttempts = 0;
       console.log("[zhizhu-client] WSS 已连接");
+      /** 立即发一次心跳：断线重连后无需再等 25s 间隔，缩短控制台「离线」窗口 */
+      try {
+        socket.send(JSON.stringify({ type: "heartbeat", tenant_id: tid, device_id: did }));
+      } catch {
+        /* noop */
+      }
     });
     socket.addEventListener("error", () => {
       console.warn("[zhizhu-client] WSS 发生错误");
@@ -131,13 +136,11 @@ export function startDeviceWssIfConfigured(app: App): void {
         ws = null;
       }
       clearPingTimer();
+      /** 永不放弃重连：服务端重启 / 网络中断 / 代理掐断后须自愈，否则设备会一直显示离线（实测 502 一次后即失联） */
       reconnectAttempts += 1;
-      if (reconnectAttempts > WSS_RECONNECT_MAX) {
-        console.warn("[zhizhu-client] WSS 自动重连已达上限，已停止");
-        return;
-      }
-      const delay = Math.min(WSS_RECONNECT_CAP_MS, WSS_RECONNECT_BASE_MS * 2 ** (reconnectAttempts - 1));
-      console.warn(`[zhizhu-client] WSS 断开，${Math.round(delay / 1000)}s 后重连（第 ${reconnectAttempts}/${WSS_RECONNECT_MAX} 次）`);
+      const expCapped = Math.min(30, reconnectAttempts - 1);
+      const delay = Math.min(WSS_RECONNECT_CAP_MS, WSS_RECONNECT_BASE_MS * 2 ** expCapped);
+      console.warn(`[zhizhu-client] WSS 断开，${Math.round(delay / 1000)}s 后重连（第 ${reconnectAttempts} 次）`);
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         startDeviceWssIfConfigured(app);

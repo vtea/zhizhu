@@ -9,13 +9,123 @@ const requireRunner = createRequire(__filename);
 
 const MARKER_NAME = "runner-playwright-chromium-marker.json";
 
-/** 子进程 Runner / `playwright install` 使用的系统 Node，供主进程 spawn（与 headed-login 共用）。 */
+/** `probeNodeRuntime` 成功后缓存，保证 spawn 与探测使用同一 Node 路径。 */
+let cachedRunnerNodeExecutable: string | null = null;
+
+export function cacheRunnerNodeExecutable(cmd: string): void {
+  cachedRunnerNodeExecutable = cmd;
+}
+
+/** 单测重置模块级缓存。 */
+export function resetCachedRunnerNodeExecutable(): void {
+  cachedRunnerNodeExecutable = null;
+}
+
+function syncProbeNodeVersion(cmd: string): boolean {
+  try {
+    cp.execFileSync(cmd, ["-v"], { timeout: 5000, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 安装包 extraResources 内的 Node 可执行文件（pack:win / pack:mac 打入）。 */
+export function packagedNodeExecutablePath(): string | null {
+  try {
+    if (app == null || !app.isPackaged) {
+      return null;
+    }
+    const candidate =
+      process.platform === "win32"
+        ? path.join(process.resourcesPath, "node", "node.exe")
+        : path.join(process.resourcesPath, "node", "bin", "node");
+    return fs.existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Runner 子进程 Node 探测顺序：ZHIZHU_NODE → 安装包内置 → PATH 中的 node。 */
+export function listRunnerNodeCandidates(): string[] {
+  const out: string[] = [];
+  const envNode = typeof process.env.ZHIZHU_NODE === "string" ? process.env.ZHIZHU_NODE.trim() : "";
+  if (envNode.length > 0) {
+    out.push(envNode);
+  }
+  const bundled = packagedNodeExecutablePath();
+  if (bundled) {
+    out.push(bundled);
+  }
+  out.push("node");
+  return [...out.filter((v, i, a) => a.indexOf(v) === i)];
+}
+
+/** 子进程 Runner / `playwright install` 使用的 Node，供主进程 spawn（与 headed-login 共用）。 */
 export function nodeExecutableForRunner(): string {
-  const raw = process.env.ZHIZHU_NODE;
-  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : "node";
+  if (cachedRunnerNodeExecutable) {
+    return cachedRunnerNodeExecutable;
+  }
+  for (const cmd of listRunnerNodeCandidates()) {
+    if (cmd !== "node") {
+      try {
+        if (!fs.existsSync(cmd)) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (syncProbeNodeVersion(cmd)) {
+      cachedRunnerNodeExecutable = cmd;
+      return cmd;
+    }
+  }
+  return "node";
+}
+
+/** 在 packaged browsers 目录内定位 Chromium 可执行文件（目录存在但二进制缺失视为不可用）。 */
+function findChromiumExecutableInBrowsersDir(dir: string): string | null {
+  try {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!ent.isDirectory() || !ent.name.startsWith("chromium")) {
+        continue;
+      }
+      const base = path.join(dir, ent.name);
+      if (process.platform === "win32") {
+        const chrome = path.join(base, "chrome-win", "chrome.exe");
+        if (fs.existsSync(chrome)) {
+          return chrome;
+        }
+      } else if (process.platform === "darwin") {
+        const chrome = path.join(base, "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium");
+        if (fs.existsSync(chrome)) {
+          return chrome;
+        }
+      }
+    }
+  } catch {
+    /* noop */
+  }
+  return null;
 }
 
 /** Playwright 浏览器缓存路径：与 Runner 烟测、install 共用。 */
+export function packagedPlaywrightBrowsersDir(): string | null {
+  try {
+    if (app == null || !app.isPackaged) {
+      return null;
+    }
+    const dir = path.join(process.resourcesPath, "playwright-browsers");
+    if (!fs.existsSync(dir)) {
+      return null;
+    }
+    return findChromiumExecutableInBrowsersDir(dir) != null ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
 export function applyPlaywrightBrowsersPath(env: NodeJS.ProcessEnv): void {
   const fromEnv =
     typeof process.env.ZHIZHU_PLAYWRIGHT_BROWSERS_PATH === "string"
@@ -25,14 +135,10 @@ export function applyPlaywrightBrowsersPath(env: NodeJS.ProcessEnv): void {
         : "";
   if (fromEnv.length > 0) {
     env.PLAYWRIGHT_BROWSERS_PATH = fromEnv;
-  } else if (app.isPackaged) {
-    try {
-      const packagedBrowsers = path.join(process.resourcesPath, "playwright-browsers");
-      if (fs.existsSync(packagedBrowsers)) {
-        env.PLAYWRIGHT_BROWSERS_PATH = packagedBrowsers;
-      }
-    } catch {
-      /* noop */
+  } else {
+    const packagedBrowsers = packagedPlaywrightBrowsersDir();
+    if (packagedBrowsers) {
+      env.PLAYWRIGHT_BROWSERS_PATH = packagedBrowsers;
     }
   }
 }
@@ -77,8 +183,16 @@ function mergeSmokeEnv(): NodeJS.ProcessEnv {
 
 function mergeInstallEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  applyPlaywrightBrowsersPath(env);
-  /** 静默安装不传 with-deps，终端用户多半已有系统字体；可按需改成 `install chromium --with-deps` */
+  /** 安装目标须可写；安装包内 resources/playwright-browsers 为只读，不可作为 install 落盘目录 */
+  const fromEnv =
+    typeof process.env.ZHIZHU_PLAYWRIGHT_BROWSERS_PATH === "string"
+      ? process.env.ZHIZHU_PLAYWRIGHT_BROWSERS_PATH.trim()
+      : typeof process.env.PLAYWRIGHT_BROWSERS_PATH === "string"
+        ? process.env.PLAYWRIGHT_BROWSERS_PATH.trim()
+        : "";
+  if (fromEnv.length > 0) {
+    env.PLAYWRIGHT_BROWSERS_PATH = fromEnv;
+  }
   return env;
 }
 
@@ -224,6 +338,31 @@ async function spawnPlaywrightInstallChromium(onLog?: (line: string) => void): P
   return true;
 }
 
+/** 安装包内已预置 Chromium 时写入版本标记，避免首启重复下载。 */
+export function syncPackagedPlaywrightBrowserMarker(): void {
+  const dir = packagedPlaywrightBrowsersDir();
+  if (!dir) {
+    return;
+  }
+  const pinned = resolvedPlaywrightNpmVersion();
+  if (!pinned) {
+    return;
+  }
+  if (readPlaywrightMarkerVersion() === pinned) {
+    return;
+  }
+  try {
+    const atom = JSON.stringify(
+      { playwrightVersion: pinned, completedAt: new Date().toISOString(), source: "packaged-browsers" },
+      null,
+      0,
+    );
+    fs.writeFileSync(markerPathRunnerPlaywright(), atom, "utf8");
+  } catch (e) {
+    console.error("[zhizhu-client] 写入预置 Chromium 标记失败", e);
+  }
+}
+
 /** 当前是否仍需要执行 playwright install chromium（与标记、跳过的环境变量一致）。 */
 export function needsPlaywrightChromiumInstall(): boolean {
   if (process.env.ZHIZHU_SKIP_PLAYWRIGHT_AUTO_INSTALL === "1") {
@@ -234,6 +373,9 @@ export function needsPlaywrightChromiumInstall(): boolean {
   }
   if (process.env.ZHIZHU_FORCE_PLAYWRIGHT_INSTALL === "1") {
     return true;
+  }
+  if (packagedPlaywrightBrowsersDir()) {
+    return false;
   }
   const pinned = resolvedPlaywrightNpmVersion();
   const marked = readPlaywrightMarkerVersion();
@@ -257,7 +399,33 @@ export function describePlaywrightChromiumDiagnostic(): { ok: boolean; detail: s
   const skip = process.env.ZHIZHU_SKIP_PLAYWRIGHT_AUTO_INSTALL === "1";
   const pinned = resolvedPlaywrightNpmVersion();
   const marked = readPlaywrightMarkerVersion();
-  const needInstall = needsPlaywrightChromiumInstall();
+  const packaged = packagedPlaywrightBrowsersDir();
+  const packagedDirOnly =
+    app != null &&
+    app.isPackaged &&
+    (() => {
+      try {
+        const dir = path.join(process.resourcesPath, "playwright-browsers");
+        return fs.existsSync(dir) && fs.readdirSync(dir).some((name) => name.startsWith("chromium"));
+      } catch {
+        return false;
+      }
+    })();
+
+  if (packaged) {
+    const chromeBin = findChromiumExecutableInBrowsersDir(packaged);
+    return {
+      ok: true,
+      detail: `可用：安装包已预置 Playwright Chromium 且可执行文件就绪（${chromeBin ?? packaged}），Playwright npm 锁定版 ${pinned ?? "—"}。`,
+    };
+  }
+
+  if (packagedDirOnly) {
+    return {
+      ok: false,
+      detail: `不可用：安装包内存在 chromium 目录但缺少可执行文件（可能打包不完整或被杀软删除）。将尝试向用户可写目录执行 playwright install chromium，或设置 ZHIZHU_FORCE_PLAYWRIGHT_INSTALL=1 强制重装。Playwright npm 锁定版 ${pinned ?? "—"}。`,
+    };
+  }
 
   if (skip) {
     const aligned = pinned != null && marked === pinned;
@@ -273,6 +441,8 @@ export function describePlaywrightChromiumDiagnostic(): { ok: boolean; detail: s
         `不可用：ZHIZHU_SKIP_PLAYWRIGHT_AUTO_INSTALL=1，且版本标记与用户数据不一致或缺失（npm 锁定版=${pinned ?? "—"} · 标记=${marked ?? "无"}）。请先手动 playwright install chromium 或取消跳过再试。`,
     };
   }
+
+  const needInstall = needsPlaywrightChromiumInstall();
 
   if (needInstall) {
     return {

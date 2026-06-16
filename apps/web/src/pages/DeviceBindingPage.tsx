@@ -10,7 +10,7 @@ import {
   verifyDeviceBindCode,
   type DeviceAuditRow,
 } from "@/api/consoleExtras";
-import { getApiBaseUrl, getApiWebSocketBaseUrl } from "@/api/env";
+import { getApiBaseUrl, getApiWebSocketBaseUrl, getClientReleasesUrl } from "@/api/env";
 import { getSession } from "@/auth/session";
 import { useSession } from "@/hooks/useSession";
 import { sessionCanManageTenantAdmin } from "@/lib/tenantConsoleAccess";
@@ -385,26 +385,44 @@ export function DeviceBindingPage() {
     { id: "by", header: "操作方", cell: (r) => r.actor_label ?? "—" },
   ];
 
+  const clientReleasesUrl = getClientReleasesUrl();
+
   const subTabs = (
-    <div className="flex flex-wrap gap-2 border-b border-zz-border-light pb-3" role="tablist">
-      {(
-        [
-          { id: "overview" as const, label: "设备与会话" },
-          { id: "code" as const, label: "绑定码" },
-          ...(canManageTenant ? ([{ id: "audit" as const, label: "设备审计" }] as const) : []),
-        ] as const
-      ).map((t) => (
-        <button
-          key={t.id}
+    <div className="flex flex-col gap-3 border-b border-zz-border-light pb-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="设备绑定分区">
+        {(
+          [
+            { id: "overview" as const, label: "设备与会话" },
+            { id: "code" as const, label: "绑定码" },
+            ...(canManageTenant ? ([{ id: "audit" as const, label: "设备审计" }] as const) : []),
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={view === t.id}
+            className={cardPanelTabClass(view === t.id)}
+            onClick={() => setView(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {clientReleasesUrl ? (
+        <Button
+          variant="secondary"
+          size="md"
           type="button"
-          role="tab"
-          aria-selected={view === t.id}
-          className={cardPanelTabClass(view === t.id)}
-          onClick={() => setView(t.id)}
+          onClick={() => window.open(clientReleasesUrl, "_blank", "noopener,noreferrer")}
         >
-          {t.label}
-        </button>
-      ))}
+          下载客户端
+        </Button>
+      ) : (
+        <p className="text-sm text-zz-muted" title="在 apps/web/.env 配置 VITE_ZHIZHU_RELEASES_PAGE_URL">
+          客户端安装包：联系管理员获取
+        </p>
+      )}
     </div>
   );
 

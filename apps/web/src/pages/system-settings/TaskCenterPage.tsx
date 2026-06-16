@@ -392,16 +392,15 @@ export function TaskCenterPage() {
       const leadStart = startDate.trim();
       const leadEnd = endDate.trim();
       if (ruleKind === "lead") {
-        if ((leadStart.length > 0) !== (leadEnd.length > 0)) {
-          throw new Error("开始日期与结束日期需同时填写，或同时留空走规则默认参数");
+        /** 高潜规则无 default_params：start/end 留空会让 Runner 抛 PLACEHOLDER_MISSING，必失败，故必填 */
+        if (!leadStart || !leadEnd) {
+          throw new Error("开始日期与结束日期必填（规则按最近互动时间筛选）");
         }
-        if (leadStart && leadEnd) {
-          if (!ISO_DATE_RE.test(leadStart) || !ISO_DATE_RE.test(leadEnd)) {
-            throw new Error("日期格式需为 YYYY-MM-DD");
-          }
-          if (leadStart > leadEnd) {
-            throw new Error("开始日期不能晚于结束日期");
-          }
+        if (!ISO_DATE_RE.test(leadStart) || !ISO_DATE_RE.test(leadEnd)) {
+          throw new Error("日期格式需为 YYYY-MM-DD");
+        }
+        if (leadStart > leadEnd) {
+          throw new Error("开始日期不能晚于结束日期");
         }
       }
       const finalAccountId = requiresExplicitAccount ? accountId : (accountId || eligibleAccounts[0] || "");
@@ -441,7 +440,8 @@ export function TaskCenterPage() {
                 limit_n: Math.trunc(n),
                 account_id: finalAccountId,
                 dy_leads_enterprise_id: enterpriseId.trim(),
-                ...(leadStart && leadEnd ? { start_date: leadStart, end_date: leadEnd } : {}),
+                start_date: leadStart,
+                end_date: leadEnd,
               }
             : {
                 mode: effectiveCollectMode,
@@ -668,7 +668,9 @@ export function TaskCenterPage() {
                               collectMode === "single_account" &&
                               !accountId)
                             ? "请选择业务账号"
-                            : null;
+                            : (ruleKind === "lead" && (!startDate.trim() || !endDate.trim()))
+                              ? "请填写开始与结束日期"
+                              : null;
 
   return (
     <div className="space-y-10">
@@ -901,7 +903,7 @@ export function TaskCenterPage() {
                         )}
                       </Field>
                       <p className="text-xs text-zz-muted">
-                        按最近互动时间筛选的日期区间；两者同时留空时按规则默认参数执行。
+                        按最近互动时间筛选的日期区间，必填；默认昨天至今天。
                       </p>
                     </>
                   ) : null}

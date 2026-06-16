@@ -20,11 +20,12 @@
     "start": "npm run build && electron .",
     "dev": "npm run start",
     "prepack:env:dy": "node -e \"require('node:fs').copyFileSync('.env.pack.dy','.env')\"",
-    "pack:mac": "npm run build && electron-builder --mac dmg --publish never",
-    "pack:win": "npm run build && node ../../scripts/electron-builder-cache-warm.mjs && electron-builder --win nsis --publish never",
+    "stage:pack": "node ../../scripts/stage-client-pack-deps.mjs",
+    "pack:mac": "npm run build && npm run stage:pack && electron-builder --mac dmg --publish never",
+    "pack:win": "npm run build && npm run stage:pack && node ../../scripts/electron-builder-cache-warm.mjs && electron-builder --win nsis --publish never",
     "pack:mac:dy": "npm run prepack:env:dy && npm run pack:mac",
     "pack:win:dy": "npm run prepack:env:dy && npm run pack:win",
-    "pack:all": "npm run build && electron-builder --mac dmg --win nsis --publish never"
+    "pack:all": "node -e \"console.error('[pack:all] 已禁用：Windows 须在本机执行 pack:win，macOS 须在本机执行 pack:mac；不可共用单份 stage 资源跨平台打包。'); process.exit(1)\""
   },
   "dependencies": {
     "@zhizhu/biz-account-auth-status": "*",
@@ -58,7 +59,30 @@
       "dist/**",
       "index.html",
       "package.json",
-      ".env"
+      ".env",
+      {
+        "from": ".pack-staging/node_modules",
+        "to": "node_modules",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "extraResources": [
+      {
+        "from": ".pack-staging/node",
+        "to": "node",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": ".pack-staging/playwright-browsers",
+        "to": "playwright-browsers",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "mac": {
       "target": [

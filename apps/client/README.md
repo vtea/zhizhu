@@ -101,6 +101,19 @@ npm run pack:win
 
 产物输出目录：`apps/client/release/`。
 
+**分平台打包（必遵）**：`stage:pack` 只会下载**当前打包机**对应平台的 Node 与 Playwright Chromium。Windows 安装包须在 **Windows** 上执行 `pack:win` / `dist:client:win`；macOS 须在 **macOS** 上执行 `pack:mac` / `dist:client:mac`。`pack:all` 已禁用，避免跨平台资源错配。
+
+打包时会自动执行 `scripts/stage-client-pack-deps.mjs`：将 **Node.js 22**（默认 `v22.14.0`，可用 `ZHIZHU_PACK_NODE_VERSION` 固定并校验 SHASUMS256）、`@zhizhu/runner`、`playwright` 与 **Playwright Chromium** 一并打入安装包（`resources/node`、`resources/playwright-browsers`）。**目标电脑无需单独安装 Node.js**（仍可用 `ZHIZHU_NODE` 覆盖）。
+
+### 其他电脑安装后 Playwright 浏览器打不开
+
+按顺序排查：
+
+1. **重新安装正式包**：须用当前仓库 `npm run dist:client:win`（或 `:mac`）产出的安装包，勿只复制开发目录。
+2. **Chromium**：新版安装包已预置；若仍提示下载，选「立即自动安装」或菜单 **「Runner Playwright 自检」**（需联网）。
+3. **诊断**：壳页 **「关于与环境」** 查看 Runner Node 与 Playwright Chromium；**「客户端日志」** 搜索 `[runner-env]`、`[playwright-install]`。
+4. **Node 覆盖**：一般无需安装系统 Node；若设置了 `ZHIZHU_NODE` 指向无效路径会导致 Runner 失败，删除该变量或改指向有效 `node.exe` 后重启。
+
 说明：
 
 - 当前为**无签名测试包**；macOS/Windows 首次安装可能出现系统安全提示，按系统提示放行即可。

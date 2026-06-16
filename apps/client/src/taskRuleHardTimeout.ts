@@ -7,6 +7,13 @@ import {
 /** 与队列 / 试跑子进程 `waitForRunnerTaskRuleChildClose` 历史默认一致 */
 export const TASK_RULE_HARD_TIMEOUT_FLOOR_MS = 5 * 60_000;
 
+/**
+ * 高潜线索（biz_lead）任务硬超时：规则含两段 `paginate`（每页 capture 等待至 45s + 60s retry），
+ * 实测单账号 51 条已耗时 ~2 分钟；线索量大或页面慢时 5 分钟必被 SIGTERM，
+ * 错误表现为「Target page, context or browser has been closed」。
+ */
+export const TASK_RULE_HARD_TIMEOUT_LEAD_MS = 15 * 60_000;
+
 /** 防止卡死任务无限占用：与最长盲滚上界（500×1.2s+）对齐并留余量 */
 export const TASK_RULE_HARD_TIMEOUT_CEILING_MS = 45 * 60_000;
 
@@ -138,7 +145,9 @@ export function resolveTaskRuleHardTimeoutMs(args: {
   }
 
   if (args.inferredIngestTarget !== "biz_video") {
-    return TASK_RULE_HARD_TIMEOUT_FLOOR_MS;
+    return args.inferredIngestTarget === "biz_lead"
+      ? TASK_RULE_HARD_TIMEOUT_LEAD_MS
+      : TASK_RULE_HARD_TIMEOUT_FLOOR_MS;
   }
 
   const paramsMerged =

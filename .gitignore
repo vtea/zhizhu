@@ -11,6 +11,7 @@ node_modules/
 # 编译输出（任意 workspace / 工具包下的 dist）
 dist/
 apps/*/release/
+**/.pack-staging/
 
 # Playwright 报告与缓存（与 e2e-playwright-zhizhu-web/.gitignore 对齐，根目录统一兜底）
 playwright-report/

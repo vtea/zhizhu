@@ -49,6 +49,8 @@ export type ClientDiagnosticsDto = {
   runnerNodeDetected: boolean;
   runnerNodeVersionLine?: string;
   runnerNodePath?: string;
+  /** Runner 子进程是否使用安装包内置 Node（resources/node） */
+  runnerNodeBundled?: boolean;
   runnerNodeTried: string[];
   userDataPath: string;
   isPackaged: boolean;

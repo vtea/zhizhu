@@ -76,6 +76,7 @@ export async function buildClientDiagnosticsDto(): Promise<ClientDiagnosticsDto>
     runnerNodeDetected: node.ok,
     runnerNodeVersionLine: node.ok ? node.versionLine : undefined,
     runnerNodePath: node.usedPath ?? undefined,
+    runnerNodeBundled: node.ok ? node.bundled : undefined,
     runnerNodeTried: node.tried,
     userDataPath: app.getPath("userData"),
     isPackaged: app.isPackaged,

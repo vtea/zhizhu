@@ -743,6 +743,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const deviceIdToken = devAuth.payload.did;
+    /** 设备凭 token 轮询/回写即在线：静默刷新 last_seen，修复「任务在跑但控制台显示离线」 */
+    void writes.touchDeviceLastSeenQuiet(tenantRoute, deviceIdToken);
 
     const isList = req.method === "GET" && (!taskIdSeg || taskIdSeg.length === 0);
     if (isList) {
@@ -767,7 +769,7 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 400, { error: out.error });
           return;
         }
-        sendJson(res, 200, { ok: true });
+        sendJson(res, 200, out);
         return;
       } catch (e) {
         sendBusinessOrInternalError(res, e);

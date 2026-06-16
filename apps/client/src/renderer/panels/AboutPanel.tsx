@@ -46,13 +46,13 @@ function formatVersions(d: ClientDiagnosticsDto): string {
     }`,
   );
   lines.push("");
-  lines.push("系统 Node（供 Runner／playwright CLI 子进程使用，非 Electron 内置 Node）：");
+  lines.push("Runner Node（供 Runner／playwright CLI 子进程，非 Electron 内置 Node）：");
   if (d.runnerNodeDetected) {
-    lines.push("  状态：可用");
+    lines.push(`  状态：可用${d.runnerNodeBundled ? " · 安装包内置" : ""}`);
     lines.push(`  版本：${d.runnerNodeVersionLine ?? "—"}`);
     lines.push(`  可执行：${d.runnerNodePath ?? "node"}`);
   } else {
-    lines.push("  状态：不可用（PATH 中无 node 且 ZHIZHU_NODE 无效）");
+    lines.push("  状态：不可用（内置 Node / PATH / ZHIZHU_NODE 均不可用）");
   }
   if (d.runnerNodeTried.length > 0) {
     lines.push(`  探测顺序：${d.runnerNodeTried.join(" → ")}`);
@@ -79,7 +79,9 @@ function formatEnv(d: ClientDiagnosticsDto): string {
           tag = unset ? "（未设置：不向设备 Runner 连接 WSS）" : "（已设置：主进程将向该基址发起 WSS）";
           break;
         case "ZHIZHU_NODE":
-          tag = unset ? "（未设置：使用 PATH 中的 node）" : "（已设置：Runner／install 使用该 node）";
+          tag = unset
+            ? "（未设置：优先使用安装包内置 Node，否则 PATH 中的 node）"
+            : "（已设置：Runner／install 优先使用该可执行文件）";
           break;
         case "ZHIZHU_PLAYWRIGHT_BROWSERS_PATH":
           tag = unset ? "（未设置：浏览器缓存走 Playwright 默认位置）" : "（已设置：Chromium 二进制缓存路径）";

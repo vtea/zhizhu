@@ -55,6 +55,7 @@ import {
   nodeExecutableForRunner,
   resolveRunnerCliJs,
 } from "./runnerProcess";
+import { ensureRunnerSpawnReady } from "./runnerEnvStartup";
 import { mergeDyHomepageUrlIntoParams } from "./bizVideoDyHomepageMerge";
 import {
   formatBizVideoOpsSkippedAccountZh,
@@ -463,12 +464,26 @@ async function patchTask(
     error_code?: string | null;
     result_summary?: unknown;
   },
-): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
-  const r = await tenantDeviceHttpJson<{ ok?: true }>(ctx, "PATCH", `/runner/tasks/${encodeURIComponent(taskId)}`, body);
+): Promise<
+  | { ok: true; requeued?: boolean; task_status?: string; auto_retry_count?: number }
+  | { ok: false; status: number; message: string }
+> {
+  const r = await tenantDeviceHttpJson<{
+    ok?: true;
+    requeued?: boolean;
+    task_status?: string;
+    auto_retry_count?: number;
+  }>(ctx, "PATCH", `/runner/tasks/${encodeURIComponent(taskId)}`, body);
   if (!r.ok) {
     return { ok: false as const, status: r.status, message: r.message };
   }
-  return { ok: true as const };
+  return {
+    ok: true as const,
+    requeued: r.data.requeued === true,
+    task_status: typeof r.data.task_status === "string" ? r.data.task_status : undefined,
+    auto_retry_count:
+      typeof r.data.auto_retry_count === "number" ? r.data.auto_retry_count : undefined,
+  };
 }
 
 function finishCloudTaskLedger(
@@ -529,6 +544,16 @@ async function spawnTaskRule(
   onLogLine: (line: string) => void,
   onStructuredEvent?: (parsed: Record<string, unknown>) => void,
 ): Promise<TaskRunSummary> {
+  const prep = await ensureRunnerSpawnReady({ onLog: onLogLine, chromium: "background" });
+  if (!prep.ok) {
+    return {
+      ok: false,
+      rows: [],
+      captures: {},
+      error_code: "RUNNER_ENV_NOT_READY",
+      error_message: prep.error,
+    };
+  }
   const cliJs = resolveRunnerCliJs();
   if (!cliJs) {
     return {
@@ -1838,34 +1863,45 @@ async function pumpOneTaskOnce(app: App, onLogLine: (line: string) => void): Pro
   }
 
   if (patchR.ok) {
-    const rs =
-      typeof patchBody.result_summary === "object" && patchBody.result_summary !== null
-        ? (patchBody.result_summary as Record<string, unknown>)
-        : {};
-    finishCloudTaskLedger(app, {
-      taskId: task.id,
-      ruleId,
-      ruleVersion: effectiveRuleVersion ?? ruleVersionForLedger,
-      startedAt: cloudRunStartedAt,
-      ok: summary.ok,
-      errorCode: summary.ok ? null : summary.error_code ?? "INTERNAL_ERROR",
-      summary: {
-        ...rs,
-        /** 勿覆盖 rs.rows_count：入库成功后已改为 rowsForIngest.length，与 summary.rows（聚合）可能不一致 */
-        account_runs: accountRunList.length,
-      },
-      ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
-    });
+    if (patchR.requeued) {
+      onLogLine(
+        `[runner-loop] 瞬态失败已自动重试入队，跳过本地失败账本 task=${task.id} retry=${String(patchR.auto_retry_count ?? "?")}`,
+      );
+    } else {
+      const rs =
+        typeof patchBody.result_summary === "object" && patchBody.result_summary !== null
+          ? (patchBody.result_summary as Record<string, unknown>)
+          : {};
+      finishCloudTaskLedger(app, {
+        taskId: task.id,
+        ruleId,
+        ruleVersion: effectiveRuleVersion ?? ruleVersionForLedger,
+        startedAt: cloudRunStartedAt,
+        ok: summary.ok,
+        errorCode: summary.ok ? null : summary.error_code ?? "INTERNAL_ERROR",
+        summary: {
+          ...rs,
+          /** 勿覆盖 rs.rows_count：入库成功后已改为 rowsForIngest.length，与 summary.rows（聚合）可能不一致 */
+          account_runs: accountRunList.length,
+        },
+        ruleDisplayName: ledgerRuleTitle.length > 0 ? ledgerRuleTitle : null,
+      });
+    }
   }
 
   const finalPrev = readStatus(app);
+  const autoRequeued = patchR.ok && patchR.requeued === true;
   writeStatus(app, {
     ...finalPrev,
     lastTaskId: task.id,
     lastFinishedAt: new Date().toISOString(),
-    lastOk: summary.ok,
-    lastErrorCode: summary.ok ? null : summary.error_code ?? "INTERNAL_ERROR",
-    lastErrorMessage: summary.ok ? null : summary.error_message ?? null,
+    lastOk: autoRequeued ? false : summary.ok,
+    lastErrorCode: autoRequeued ? summary.error_code ?? "INTERNAL_ERROR" : summary.ok ? null : summary.error_code ?? "INTERNAL_ERROR",
+    lastErrorMessage: autoRequeued
+      ? `瞬态失败已自动重试入队（第 ${String(patchR.auto_retry_count ?? "?")} 次），等待云端再次分配。`
+      : summary.ok
+        ? null
+        : summary.error_message ?? null,
     currentTaskId: null,
     /** B 套：任务结案后清空户级即推进度（详细户级结果已落到 task-center-runs.json 的 summary 字段） */
     currentAccountProgress: null,

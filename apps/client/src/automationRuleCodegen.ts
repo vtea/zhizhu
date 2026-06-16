@@ -36,6 +36,7 @@ import {
   resolvePlaywrightCliJs,
   resolveRunnerCliJs,
 } from "./runnerProcess";
+import { ensureRunnerSpawnReady } from "./runnerEnvStartup";
 
 export type OpenCodegenResult =
   | { ok: true; pid: number | undefined; startUrl: string }
@@ -172,6 +173,10 @@ export async function openCodegen(
   const profile = getProfileById(app, args.profileId);
   if (!profile) {
     return { ok: false as const, error: "未找到选中的 Playwright 配置" };
+  }
+  const envPrep = await ensureRunnerSpawnReady({ onLog: onLine, chromium: "background" });
+  if (!envPrep.ok) {
+    return { ok: false as const, error: envPrep.error };
   }
   const resolved = resolveProfileStartUrl(getWebBaseUrl(), profile.defaultStartPath);
   let startHref: string;

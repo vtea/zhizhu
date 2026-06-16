@@ -2,7 +2,7 @@ import "./loadEnv";
 import { randomUUID } from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell, Menu, Tray, nativeImage } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -24,6 +24,7 @@ import { buildClientDiagnosticsDto, buildUpdateCheckPlaceholder } from "./client
 import { probeApiHealth } from "./apiProbe";
 import { cleanupStaleClientStateTemps, readClientState, writeClientState } from "./clientState";
 import { bindDeviceConsumeApi, postDeviceRestHeartbeat } from "./deviceBind";
+import { startDeviceRestHeartbeatLoop } from "./deviceRestHeartbeatLoop";
 import { fetchTenantExistsOnServer } from "./tenantRegistry";
 import { CONSOLE_QUICK_LINKS, CONSOLE_PATHS, buildConsoleUrl } from "./consolePaths";
 import { DEFAULT_API_BASE, DEFAULT_WEB_BASE, getApiBaseUrl, getDefaultTenantFromEnv, getWebBaseUrl, isValidTenantSlug } from "./config";
@@ -45,7 +46,8 @@ import {
   stopPlaywrightShellSyncPeriodicLoop,
 } from "./playwrightProfileRemoteSync";
 import { getPlaywrightHeadedStatus, spawnPlaywrightHeaded, stopPlaywrightHeaded } from "./playwrightHeadedProcess";
-import { runStartupRunnerEnvironmentDialog, runnerSmokeWithEnvPrompts } from "./runnerEnvStartup";
+import { runStartupRunnerEnvironmentDialog, runnerSmokeWithEnvPrompts, preparePlaywrightHeadedLaunch } from "./runnerEnvStartup";
+import { syncPackagedPlaywrightBrowserMarker } from "./runnerProcess";
 import {
   acknowledgeDraftConflict,
   deleteDraft as automationRulesDeleteDraft,
@@ -268,6 +270,34 @@ function afterShellPlaywrightProfilesChanged(): void {
   rebuildTrayMenu();
 }
 
+async function openPlaywrightHeadedWithEnvCheck(
+  profileId: string,
+  parent: BrowserWindow | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const prep = await preparePlaywrightHeadedLaunch(parent, logRunnerSetupToShells);
+  if (!prep.ok) {
+    if (!prep.userNotified) {
+      await dialog.showMessageBox({
+        type: "error",
+        title: "无法打开 Playwright 浏览器",
+        message: prep.error,
+        buttons: ["确定"],
+      });
+    }
+    return { ok: false, error: prep.error };
+  }
+  const launched = await spawnPlaywrightHeaded(app, profileId);
+  if (!launched.ok && !parent) {
+    await dialog.showMessageBox({
+      type: "error",
+      title: "无法打开 Playwright 浏览器",
+      message: launched.error,
+      buttons: ["确定"],
+    });
+  }
+  return launched;
+}
+
 function buildPlaywrightVisualBrowserMenuItems(): Electron.MenuItemConstructorOptions[] {
   const profs = listPlaywrightProfiles(app);
   const defId = getDefaultPlaywrightProfileId(app);
@@ -281,7 +311,7 @@ function buildPlaywrightVisualBrowserMenuItems(): Electron.MenuItemConstructorOp
       enabled: profs.length > 0 && defaultOpenId.length > 0,
       click: (): void => {
         if (defaultOpenId.length === 0) return;
-        void spawnPlaywrightHeaded(app, defaultOpenId);
+        void openPlaywrightHeadedWithEnvCheck(defaultOpenId, getLiveWindows()[0] ?? null);
       },
     },
     { type: "separator" },
@@ -295,7 +325,7 @@ function buildPlaywrightVisualBrowserMenuItems(): Electron.MenuItemConstructorOp
     items.push({
       label: `${p.label}（${p.slug}）${tag}`,
       click: (): void => {
-        void spawnPlaywrightHeaded(app, p.id);
+        void openPlaywrightHeadedWithEnvCheck(p.id, getLiveWindows()[0] ?? null);
       },
     });
   }
@@ -1250,7 +1280,10 @@ void (function registerPrimaryInstanceAppHooks(): void {
         return { ok: false as const, error: "拒绝处理：来源页面不受信任。" };
       }
       const id = typeof profileId === "string" ? profileId.trim() : "";
-      return spawnPlaywrightHeaded(app, id);
+      return openPlaywrightHeadedWithEnvCheck(
+        id,
+        BrowserWindow.fromWebContents(event.sender) ?? getLiveWindows()[0] ?? null,
+      );
     },
   );
 
@@ -2274,6 +2307,7 @@ void (function registerPrimaryInstanceAppHooks(): void {
       initTray();
       rebuildTrayMenu();
       syncWssFromDisk();
+      startDeviceRestHeartbeatLoop(app);
       /** 启动即触发一次同步并开启周期重试，让 API 临时故障/版本错位修复后无需用户操作即可恢复一致 */
       enqueuePlaywrightShellProfileSync(app);
       startPlaywrightShellSyncPeriodicLoop(app);
@@ -2286,6 +2320,7 @@ void (function registerPrimaryInstanceAppHooks(): void {
           /* noop */
         }
       });
+      syncPackagedPlaywrightBrowserMarker();
       void runStartupRunnerEnvironmentDialog(getLiveWindows()[0] ?? null, logRunnerSetupToShells);
     } finally {
       primaryBootstrapFinished = true;

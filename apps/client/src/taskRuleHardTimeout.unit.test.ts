@@ -5,6 +5,7 @@ import {
   resolveTaskRuleHardTimeoutMs,
   TASK_RULE_HARD_TIMEOUT_CEILING_MS,
   TASK_RULE_HARD_TIMEOUT_FLOOR_MS,
+  TASK_RULE_HARD_TIMEOUT_LEAD_MS,
 } from "./taskRuleHardTimeout";
 
 describe("resolveTaskRuleHardTimeoutMs", () => {
@@ -37,6 +38,16 @@ describe("resolveTaskRuleHardTimeoutMs", () => {
       env: {},
     });
     assert.equal(ms, TASK_RULE_HARD_TIMEOUT_FLOOR_MS);
+  });
+
+  it("biz_lead uses 15m budget (paginate-heavy rule must outlive 5m floor)", () => {
+    const ms = resolveTaskRuleHardTimeoutMs({
+      inferredIngestTarget: "biz_lead",
+      params: {},
+      env: {},
+    });
+    assert.equal(ms, TASK_RULE_HARD_TIMEOUT_LEAD_MS);
+    assert.ok(ms > TASK_RULE_HARD_TIMEOUT_FLOOR_MS);
   });
 
   it("biz_video full blind scroll 500 pages >= 600s headroom budget", () => {

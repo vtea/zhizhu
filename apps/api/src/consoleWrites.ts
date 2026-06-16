@@ -203,6 +203,11 @@ export type WriteResult =
       mail_sent?: boolean;
       mail_error?: string;
       association_counts?: BizAccountAssociationCounts;
+      /** Runner PATCH 后任务状态（queued / failed / succeeded 等） */
+      task_status?: string;
+      /** 瞬态失败自动重试入队 */
+      requeued?: boolean;
+      auto_retry_count?: number;
     }
   | {
       ok: false;
@@ -1363,6 +1368,27 @@ export async function issueBindCode(tenantId: string, ttlHours: number): Promise
   }
 }
 
+/**
+ * 静默刷新设备 `last_seen_at`（不写 `biz_device_audit`）：
+ * Runner 经设备 token 轮询/回写任务即证明设备在线，避免「任务在跑但控制台显示离线」
+ * （WSS 心跳断开时旧客户端无 REST 周期兜底，见 apps/client/src/wssClient.ts）。
+ */
+export async function touchDeviceLastSeenQuiet(tenantId: string, deviceId: string): Promise<void> {
+  const did = typeof deviceId === "string" ? deviceId.trim() : "";
+  if (!did) {
+    return;
+  }
+  try {
+    await poolQuery(
+      `UPDATE biz_device SET last_seen_at = now(), updated_at = now()
+       WHERE tenant_id = $1 AND trim(device_id) = $2 AND revoked_at IS NULL`,
+      [tenantId, did],
+    );
+  } catch {
+    /* 在线标记是尽力而为，不影响 Runner 主链路 */
+  }
+}
+
 export async function touchDeviceHeartbeat(tenantId: string, deviceId: string): Promise<WriteResult> {
   const did = typeof deviceId === "string" ? deviceId.trim() : "";
   if (!did) {
@@ -1762,7 +1788,9 @@ export async function patchTaskStatus(
     }
     if (s === "queued") {
       const r = await poolQuery(
-        `UPDATE biz_task SET status = 'queued', error_code = NULL, updated_at = now()
+        `UPDATE biz_task SET status = 'queued', error_code = NULL, updated_at = now(),
+             payload = CASE WHEN payload ? 'auto_retry_count'
+               THEN jsonb_set(payload, '{auto_retry_count}', '0'::jsonb) ELSE payload END
          WHERE id = $1::uuid AND tenant_id = $2 AND status IN ('failed', 'cancelled', 'succeeded')`,
         [taskId, tenantId],
       );
@@ -1909,6 +1937,36 @@ export async function patchTaskForRunner(
 
     if (status === "failed" && cur === "running") {
       const code = errorCodePick ?? "RUNNER_ERROR";
+      /**
+       * 瞬态错误自动重试入队（最多 2 次）：页面冷启动渲染慢 / 接口偶发超时，人工「重试入队」后常一次成功
+       * （实测同一任务两次 SELECTOR_TIMEOUT 后第三次成功入库）。非瞬态（登录墙、参数缺失等）仍直接 failed。
+       */
+      const TRANSIENT_AUTO_RETRY_CODES = new Set([
+        "SELECTOR_TIMEOUT",
+        "NETWORK_PATTERN_TIMEOUT",
+        "NAV_FAILED",
+        "STEP_TIMEOUT",
+      ]);
+      const TASK_AUTO_RETRY_MAX = 2;
+      if (TRANSIENT_AUTO_RETRY_CODES.has(code)) {
+        const retried = await poolQuery(
+          `UPDATE biz_task SET status = 'queued',
+               error_code = $4,
+               result_summary = CASE WHEN $5::text IS NULL THEN result_summary ELSE $5::jsonb END,
+               payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{auto_retry_count}',
+                 to_jsonb(COALESCE((payload->>'auto_retry_count')::int, 0) + 1)),
+               updated_at = now()
+             WHERE id = $1::uuid AND tenant_id = $2 AND trim(device_id) = $3 AND status = 'running'
+               AND COALESCE((payload->>'auto_retry_count')::int, 0) < $6
+             RETURNING COALESCE((payload->>'auto_retry_count')::int, 0) AS retry_n`,
+          [taskId, tenantId, did, code, summaryJson, TASK_AUTO_RETRY_MAX],
+        );
+        if ((retried.rowCount ?? 0) > 0) {
+          const n = Number((retried.rows[0] as { retry_n?: number }).retry_n ?? 1);
+          await appendTaskRunEvent(taskId, "requeued", `${code}，自动重试入队（第 ${n}/${TASK_AUTO_RETRY_MAX} 次）`);
+          return { ok: true, task_status: "queued", requeued: true, auto_retry_count: n };
+        }
+      }
       const r = await poolQuery(
         `UPDATE biz_task SET status = 'failed', finished_at = now(),
              error_code = $4,
@@ -1929,7 +1987,9 @@ export async function patchTaskForRunner(
         return { ok: false, error: "仅失败/取消/成功后允许重试入队" };
       }
       const r = await poolQuery(
-        `UPDATE biz_task SET status = 'queued', error_code = NULL, updated_at = now()
+        `UPDATE biz_task SET status = 'queued', error_code = NULL, updated_at = now(),
+             payload = CASE WHEN payload ? 'auto_retry_count'
+               THEN jsonb_set(payload, '{auto_retry_count}', '0'::jsonb) ELSE payload END
            WHERE id = $1::uuid AND tenant_id = $2 AND trim(device_id) = $3
              AND status IN ('failed', 'cancelled', 'succeeded')`,
         [taskId, tenantId, did],

@@ -48,6 +48,7 @@ import {
   nodeExecutableForRunner,
   resolveRunnerCliJs,
 } from "./runnerProcess";
+import { ensureRunnerSpawnReady } from "./runnerEnvStartup";
 import { augmentRunnerErrorMessageForDisplay } from "./runnerFailureHints";
 import { buildBizVideoCoverageForAggregate } from "./bizVideoCaptureCoverage";
 import type {
@@ -124,6 +125,10 @@ export async function trialRunAutomationRule(
     const profile = getProfileById(app, args.profileId);
     if (!profile) {
       return { ok: false as const, error: "未找到选中的 Playwright 配置" };
+    }
+    const envPrep = await ensureRunnerSpawnReady({ onLog: onLogLine, chromium: "background" });
+    if (!envPrep.ok) {
+      return { ok: false as const, error: envPrep.error };
     }
     let body: RuleBody | null;
     let fileRuleDir: string | undefined;
