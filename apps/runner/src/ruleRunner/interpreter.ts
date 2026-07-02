@@ -49,6 +49,38 @@ function resolveEffectiveScrollEndIfVisible(opts: {
   return undefined;
 }
 
+/** goto 成功后：线索版会话失效会重定向到登录页，尽早 USER_ACTION_REQUIRED 而非空等后续 selector。 */
+function assertNotOnCluerichLoginPage(page: Page, idx: number, stepType: string): void {
+  const url = page.url();
+  if (/\/pc\/auth\/login/i.test(url) || /\/auth\/login/i.test(url)) {
+    throw new RuleError(
+      "USER_ACTION_REQUIRED",
+      idx,
+      stepType,
+      "线索版会话已失效。请在当前 Playwright 浏览器配置中重新登录 leads.cluerich.com 后再执行同步。",
+    );
+  }
+}
+
+/**
+ * 翻页下一页按钮短探：Semi/leads 列表仅一页时常不渲染分页 DOM；全量 waitForLocator 会空等 15s。
+ * 在 probeMs 内轮询可见性，未见则视为末页（返回 false）。
+ */
+async function probeNextButtonVisible(
+  sel: SelectorRef,
+  page: Page,
+  probeMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + probeMs;
+  while (Date.now() < deadline) {
+    if (await isAnySelectorVisible(sel, page)) {
+      return true;
+    }
+    await sleepMs(200);
+  }
+  return false;
+}
+
 function parseYmd(input: string): { y: number; m: number; d: number } | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.trim());
   if (!m) {
@@ -374,6 +406,7 @@ async function executeStep(
         }
         try {
           await page.goto(target, { waitUntil: step.waitUntil ?? "domcontentloaded", timeout: perStepTimeoutMs });
+          assertNotOnCluerichLoginPage(page, idx, step.type);
           return;
         } catch (e) {
           lastMsg = e instanceof Error ? e.message : String(e);
@@ -617,6 +650,10 @@ async function executeStep(
           /** 翻页前快照，等待"翻页后"该 key 累加到 prev+1 */
           const prevCount = waitKey ? bucket.countOf(waitKey) : 0;
           try {
+            const nextButtonProbeMs = 2500;
+            if (!(await probeNextButtonVisible(step.next_button_selector, page, nextButtonProbeMs))) {
+              return;
+            }
             const loc = await waitForLocator(
               step.next_button_selector,
               page,

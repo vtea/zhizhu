@@ -22,10 +22,12 @@
 
 - 走 **接口捕获**：`captureResponse` → `captures.employee_personal_auth_payload`，Runner 再用 `buildRowsFromEmployeePersonalAuthCaptures` 转为表行入库。
 - 表格 DOM 采集未硬编码；若接口字段变化，同步改 `runnerLoop.ts` 内 `buildRowsFromEmployeePersonalAuthCaptures`。
+- **分页**：首包由 `wait_personal_auth_payload` 保证；`paginate_personal_auth_pages` 用 Semi 下一页按钮累加。当列表仅一页或总行数 ≤ 每页条数时，页面常**不渲染** `ul.semi-page`；解释器对「找不到下一页 / 按钮 disabled」按**正常结束**处理（不报错、不空等 30s）。多页时仍走 `li.semi-page-next` 翻页。
+- **登录态**：`goto` 后若被重定向到 `/pc/auth/login`，Runner 立即返回 `USER_ACTION_REQUIRED`，请在对应 Playwright 浏览器配置中重新登录 leads.cluerich.com。
 
 ## 后续增强
 
-- 分页拉全量、字段标准化可在 `collectTable` / 映射层继续加。
+- 字段标准化可在映射层继续加。
 
 ## 附录：授权状态字段与代码常量
 

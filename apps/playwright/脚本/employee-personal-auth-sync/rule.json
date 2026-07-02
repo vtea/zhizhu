@@ -39,12 +39,6 @@
       "timeout_ms": 120000
     },
     {
-      "type": "wait",
-      "step_id": "wait_pagination_render",
-      "selector": { "kind": "css", "value": "ul.semi-page" },
-      "timeout_ms": 30000
-    },
-    {
       "type": "paginate",
       "step_id": "paginate_personal_auth_pages",
       "mode": "next_button",
