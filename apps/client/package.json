@@ -33,19 +33,19 @@
     "@zhizhu/playwright-rule-schema": "*",
     "@zhizhu/runner": "0.1.0",
     "dotenv": "^16.4.7",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "^4.1.4",
+    "@tailwindcss/cli": "^4.3.2",
     "@types/node": "^22.10.0",
-    "@types/react": "^19.1.2",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.1.2",
     "electron": "^35.7.5",
     "electron-builder": "^24.13.3",
-    "esbuild": "^0.25.2",
-    "tailwindcss": "^4.1.4",
-    "tsx": "^4.19.2",
+    "esbuild": "^0.28.1",
+    "tailwindcss": "^4.3.2",
+    "tsx": "^4.22.5",
     "typescript": "~5.8.0"
   },
   "build": {

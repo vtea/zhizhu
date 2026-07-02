@@ -16,11 +16,11 @@
   "dependencies": {
     "@zhizhu/playwright-browser-fingerprint": "*",
     "@zhizhu/playwright-rule-schema": "*",
-    "playwright": "^1.59.1"
+    "playwright": "^1.61.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "tsx": "^4.19.2",
+    "tsx": "^4.22.5",
     "typescript": "~5.8.0"
   }
 }
