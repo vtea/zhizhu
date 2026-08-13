@@ -14,27 +14,27 @@
   },
   "dependencies": {
     "@zhizhu/biz-account-auth-status": "*",
-    "@tanstack/react-query": "^5.74.4",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "react-router-dom": "^7.5.2"
+    "@tanstack/react-query": "^5.101.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2"
   },
   "optionalDependencies": {
-    "@rollup/rollup-win32-x64-msvc": "4.60.2"
+    "@rollup/rollup-win32-x64-msvc": "4.62.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.1",
-    "@tailwindcss/vite": "^4.1.4",
-    "@types/react": "^19.1.2",
-    "@types/react-dom": "^19.1.2",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.4.1",
     "eslint": "^9.25.1",
     "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.20",
+    "eslint-plugin-react-refresh": "^0.5.4",
     "globals": "^16.0.0",
-    "tailwindcss": "^4.1.4",
+    "tailwindcss": "^4.3.3",
     "typescript": "~5.8.3",
-    "typescript-eslint": "^8.31.0",
+    "typescript-eslint": "^8.67.0",
     "vite": "^6.3.3"
   }
 }

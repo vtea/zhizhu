@@ -10,7 +10,7 @@
     "test:e2e:login": "node scripts/preflight.mjs && playwright test specs/01-console-login-and-register.spec.ts --grep 登录"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
-    "playwright": "^1.59.1"
+    "@playwright/test": "^1.62.1",
+    "playwright": "^1.62.1"
   }
 }
