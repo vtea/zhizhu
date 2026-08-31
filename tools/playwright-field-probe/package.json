@@ -23,7 +23,7 @@
     "probe:verify:clue-tabs": "sh scripts/verify-clue-list-tabs.sh"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.9.3",
     "playwright": "^1.59.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
