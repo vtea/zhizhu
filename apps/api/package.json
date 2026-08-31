@@ -25,12 +25,12 @@
     "@zhizhu/playwright-rule-schema": "*",
     "@types/ws": "^8.18.1",
     "dotenv": "^16.4.7",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^8.0.11",
     "pg": "^8.14.1",
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "@types/nodemailer": "^6.4.17",
+    "@types/nodemailer": "^8.0.1",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.11",
     "tsx": "^4.19.2",
